@@ -1,0 +1,17 @@
+{
+  "scripts": {
+    "start": "parcel index.html",
+    "http-server": "http-server assets --cors"
+  },
+  "dependencies": {
+    "gl-matrix": "^3.3.0",
+    "regl": "^1.6.1",
+    "regl-camera": "^2.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^14.0.27",
+    "http-server": "^0.12.3",
+    "parcel-bundler": "^1.12.4",
+    "typescript": "^3.9.7"
+  }
+}
