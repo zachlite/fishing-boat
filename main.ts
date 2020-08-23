@@ -1,5 +1,7 @@
 import { mat4, quat, vec3 } from "gl-matrix";
 import REGL = require("regl");
+import { debug } from "console";
+import { chdir } from "process";
 
 const AssetUrl = "http://localhost:8080";
 
@@ -175,179 +177,182 @@ async function loadImage(imgpath): Promise<HTMLImageElement> {
 }
 
 function RenderFactory(manifest, buffer, assetNamespace) {
-  function buildMeshRenderFn(regl, meshIdx, transform: mat4) {
+  function buildMeshRenderFn(regl, meshIdx) {
     const mesh = manifest.meshes[meshIdx];
-    const fns: Promise<any>[] = mesh.primitives.map(async (primitive) => {
-      const normalAccessorIdx = primitive.attributes.NORMAL;
-      const positionAccessorIdx = primitive.attributes.POSITION;
-      const indicesAccessorIdx = primitive.indices;
-      const indicesData = getTypedDataView(
-        buffer,
-        manifest,
-        indicesAccessorIdx
-      );
+    const fns: Promise<REGL.DrawCommand>[] = mesh.primitives.map(
+      async (primitive) => {
+        const normalAccessorIdx = primitive.attributes.NORMAL;
+        const positionAccessorIdx = primitive.attributes.POSITION;
+        const indicesAccessorIdx = primitive.indices;
+        const indicesData = getTypedDataView(
+          buffer,
+          manifest,
+          indicesAccessorIdx
+        );
 
-      const positionAccessor = manifest.accessors[positionAccessorIdx];
-      const positionBufferView =
-        manifest.bufferViews[positionAccessor.bufferView];
+        const positionAccessor = manifest.accessors[positionAccessorIdx];
+        const positionBufferView =
+          manifest.bufferViews[positionAccessor.bufferView];
 
-      const normalsAccessor = manifest.accessors[normalAccessorIdx];
-      const normalsBufferView =
-        manifest.bufferViews[normalsAccessor.bufferView];
+        const normalsAccessor = manifest.accessors[normalAccessorIdx];
+        const normalsBufferView =
+          manifest.bufferViews[normalsAccessor.bufferView];
 
-      const attributes: any = {
-        position: {
-          buffer: regl.buffer(
-            new Float32Array(
-              buffer,
-              positionBufferView.byteOffset,
-              positionBufferView.byteLength / 4
-            )
-          ),
-          offset: positionAccessor.byteOffset,
-          stride: positionBufferView.byteStride,
-        },
-        normal: {
-          buffer: regl.buffer(
-            new Float32Array(
-              buffer,
-              normalsBufferView.byteOffset,
-              normalsBufferView.byteLength / 4
-            )
-          ),
-          offset: normalsAccessor.byteOffset,
-          stride: normalsBufferView.byteStride,
-        },
-      };
-
-      // uvs
-      if (primitive.attributes.TEXCOORD_0) {
-        const uvAccessorIdx = primitive.attributes.TEXCOORD_0;
-        const uvAccessor = manifest.accessors[uvAccessorIdx];
-        const uvBufferView = manifest.bufferViews[uvAccessor.bufferView];
-        attributes["uv"] = {
-          buffer: regl.buffer(
-            new Float32Array(
-              buffer,
-              uvBufferView.byteOffset,
-              uvBufferView.byteLength / 4
-            )
-          ),
-          offset: uvAccessor.byteOffset,
-          stride: uvBufferView.byteStride,
+        const attributes: any = {
+          position: {
+            buffer: regl.buffer(
+              new Float32Array(
+                buffer,
+                positionBufferView.byteOffset,
+                positionBufferView.byteLength / 4
+              )
+            ),
+            offset: positionAccessor.byteOffset,
+            stride: positionBufferView.byteStride,
+          },
+          normal: {
+            buffer: regl.buffer(
+              new Float32Array(
+                buffer,
+                normalsBufferView.byteOffset,
+                normalsBufferView.byteLength / 4
+              )
+            ),
+            offset: normalsAccessor.byteOffset,
+            stride: normalsBufferView.byteStride,
+          },
         };
-      }
 
-      /// material
-      const materialIdx = primitive.material;
-      const material = manifest.materials[materialIdx];
+        // uvs
+        if (primitive.attributes.TEXCOORD_0) {
+          const uvAccessorIdx = primitive.attributes.TEXCOORD_0;
+          const uvAccessor = manifest.accessors[uvAccessorIdx];
+          const uvBufferView = manifest.bufferViews[uvAccessor.bufferView];
+          attributes["uv"] = {
+            buffer: regl.buffer(
+              new Float32Array(
+                buffer,
+                uvBufferView.byteOffset,
+                uvBufferView.byteLength / 4
+              )
+            ),
+            offset: uvAccessor.byteOffset,
+            stride: uvBufferView.byteStride,
+          };
+        }
 
-      // assume pbrmetallicroughness:
-      const uniforms: any = {
-        sceneTransform: transform,
-      };
+        /// material
+        const materialIdx = primitive.material;
+        const material = manifest.materials[materialIdx];
 
-      if (material.pbrMetallicRoughness.baseColorFactor) {
-        uniforms.baseColorFactor =
-          material.pbrMetallicRoughness.baseColorFactor;
-      }
-      if (material.pbrMetallicRoughness.baseColorTexture) {
-        const texIndex =
-          material.pbrMetallicRoughness.baseColorTexture.index || 0;
-        const texture = manifest.textures[texIndex];
-        const uri = manifest.images[texture.source].uri;
-        const image = await loadImage(`${assetNamespace}/${uri}`);
+        // assume pbrmetallicroughness:
+        const uniforms: any = {
+          sceneTransform: (context, props) => props.localTransform,
+        };
 
-        const samplers = manifest.samplers || [];
-        const sampler = samplers[texture.sampler];
+        if (material.pbrMetallicRoughness.baseColorFactor) {
+          uniforms.baseColorFactor =
+            material.pbrMetallicRoughness.baseColorFactor;
+        }
+        if (material.pbrMetallicRoughness.baseColorTexture) {
+          const texIndex =
+            material.pbrMetallicRoughness.baseColorTexture.index || 0;
+          const texture = manifest.textures[texIndex];
+          const uri = manifest.images[texture.source].uri;
+          const image = await loadImage(`${assetNamespace}/${uri}`);
 
-        const mag = glEnumLookup[sampler?.magFilter] || "nearest";
-        const min = glEnumLookup[sampler?.minFilter] || "nearest";
-        const wrapS = glEnumLookup[sampler?.wrapS] || "repeat";
-        const wrapT = glEnumLookup[sampler?.wrapT] || "repeat";
+          const samplers = manifest.samplers || [];
+          const sampler = samplers[texture.sampler];
 
-        uniforms.tex = regl.texture({
-          data: image,
-          mag,
-          min,
-          wrapS,
-          wrapT,
-          mipmap: true,
-        });
-      }
+          const mag = glEnumLookup[sampler?.magFilter] || "nearest";
+          const min = glEnumLookup[sampler?.minFilter] || "nearest";
+          const wrapS = glEnumLookup[sampler?.wrapS] || "repeat";
+          const wrapT = glEnumLookup[sampler?.wrapT] || "repeat";
 
-      const vertSourceBuilder = new VertSourceBuilder();
-      const fragSourceBuilder = new FragSourceBuilder();
+          uniforms.tex = regl.texture({
+            data: image,
+            mag,
+            min,
+            wrapS,
+            wrapT,
+            mipmap: true,
+          });
+        }
 
-      vertSourceBuilder.setUniform("uniform mat4 projection, view;");
+        const vertSourceBuilder = new VertSourceBuilder();
+        const fragSourceBuilder = new FragSourceBuilder();
 
-      if (attributes.position) {
-        vertSourceBuilder.setAttribute("attribute vec3 position;");
-      }
-      if (attributes.normal) {
-        vertSourceBuilder.setAttribute("attribute vec3 normal;");
-      }
-      if (attributes.uv) {
-        vertSourceBuilder.setAttribute("attribute vec2 uv;");
-        vertSourceBuilder.setVarying("varying highp vec2 vuv;");
-        fragSourceBuilder.setVarying("varying highp vec2 vuv;");
-      }
+        vertSourceBuilder.setUniform("uniform mat4 projection, view;");
 
-      if (uniforms.baseColorFactor) {
-        fragSourceBuilder.setUniform("uniform vec4 baseColorFactor;");
-      }
+        if (attributes.position) {
+          vertSourceBuilder.setAttribute("attribute vec3 position;");
+        }
+        if (attributes.normal) {
+          vertSourceBuilder.setAttribute("attribute vec3 normal;");
+        }
+        if (attributes.uv) {
+          vertSourceBuilder.setAttribute("attribute vec2 uv;");
+          vertSourceBuilder.setVarying("varying highp vec2 vuv;");
+          fragSourceBuilder.setVarying("varying highp vec2 vuv;");
+        }
 
-      if (uniforms.sceneTransform) {
-        vertSourceBuilder.setUniform("uniform mat4 sceneTransform;");
-      }
+        if (uniforms.baseColorFactor) {
+          fragSourceBuilder.setUniform("uniform vec4 baseColorFactor;");
+        }
 
-      if (uniforms.tex) {
-        fragSourceBuilder.setUniform("uniform sampler2D tex;");
-      }
+        if (uniforms.sceneTransform) {
+          vertSourceBuilder.setUniform("uniform mat4 sceneTransform;");
+        }
 
-      const vert = vertSourceBuilder.build(`
+        if (uniforms.tex) {
+          fragSourceBuilder.setUniform("uniform sampler2D tex;");
+        }
+
+        const vert = vertSourceBuilder.build(`
                   ${attributes.uv ? "vuv = uv;" : ""}
                   gl_Position = projection * view * sceneTransform * vec4(position, 1.0);
                   `);
 
-      const frag = fragSourceBuilder.build(
-        uniforms.tex
-          ? `gl_FragColor = texture2D(tex, vuv);`
-          : `gl_FragColor = baseColorFactor;`
-      );
+        const frag = fragSourceBuilder.build(
+          uniforms.tex
+            ? `gl_FragColor = texture2D(tex, vuv);`
+            : `gl_FragColor = baseColorFactor;`
+        );
 
-      return regl({
-        vert,
-        frag,
-        attributes,
-        uniforms,
-        elements: indicesData,
-      });
-    });
+        return regl({
+          vert,
+          frag,
+          attributes,
+          uniforms,
+          elements: indicesData,
+        });
+      }
+    );
     return fns;
   }
 
   return buildMeshRenderFn;
 }
+type NodeIdx = number;
 
-// build a list of meshes, and their corresponding transforms
-function buildMeshTransformPairs(
+function buildLocalTransform(node) {
+  if (node.matrix) {
+    return node.matrix;
+  }
+  return mat4.fromRotationTranslationScale(
+    mat4.create(),
+    node.rotation || quat.create(),
+    node.translation || vec3.create(),
+    node.scale || vec3.fromValues(1, 1, 1)
+  );
+}
+
+function buildMeshTransforms(
   nodes,
   nodeIdx,
   parentTransform = mat4.create()
-): { meshIdx: number; transform: mat4 }[] {
+): Record<NodeIdx, mat4> {
   const node = nodes[nodeIdx];
-  function buildLocalTransform(node) {
-    if (node.matrix) {
-      return node.matrix;
-    }
-    return mat4.fromRotationTranslationScale(
-      mat4.create(),
-      node.rotation || quat.create(),
-      node.translation || vec3.create(),
-      node.scale || vec3.fromValues(1, 1, 1)
-    );
-  }
 
   const localTransform = buildLocalTransform(node);
 
@@ -357,27 +362,15 @@ function buildMeshTransformPairs(
     localTransform
   );
 
-  let pairs = [];
+  let children = {};
+  (node.children || []).forEach((nodeIdx) => {
+    children = {
+      ...children,
+      ...buildMeshTransforms(nodes, nodeIdx, globalTransform),
+    };
+  });
 
-  if (node.mesh !== undefined) {
-    pairs.push({ meshIdx: node.mesh, transform: globalTransform });
-  }
-
-  // recurse for all children
-  if (node.children !== undefined) {
-    for (const childIdx of node.children) {
-      const childPairs = buildMeshTransformPairs(
-        nodes,
-        childIdx,
-        globalTransform
-      );
-      for (const pair of childPairs) {
-        pairs.push(pair);
-      }
-    }
-  }
-
-  return pairs;
+  return { [nodeIdx]: globalTransform, ...children };
 }
 
 window.onload = async () => {
@@ -386,9 +379,9 @@ window.onload = async () => {
     damping: 0,
   });
 
-  const assetNamespace = "ReciprocatingSaw";
-  const glTFfile = "ReciprocatingSaw";
-  const binFile = "ReciprocatingSaw0";
+  const assetNamespace = "CesiumMilkTruck";
+  const glTFfile = "CesiumMilkTruck";
+  const binFile = "CesiumMilkTruck_data";
 
   const { manifest, buffer } = await fetchglTF(
     `${assetNamespace}/${glTFfile}.gltf`,
@@ -398,22 +391,27 @@ window.onload = async () => {
   console.log(manifest, buffer);
 
   const buildMeshRenderer = RenderFactory(manifest, buffer, assetNamespace);
-  const meshList = manifest.scenes[0].nodes.flatMap((rootNode) =>
-    buildMeshTransformPairs(manifest.nodes, rootNode)
-  );
 
-  const renderFns: Array<REGL.DrawCommand> = await Promise.all(
-    meshList.flatMap((mesh) =>
-      buildMeshRenderer(regl, mesh.meshIdx, mesh.transform)
-    )
-  );
+  let meshRenderers: Record<NodeIdx, REGL.DrawCommand[]> = {};
+  for (let i = 0; i < manifest.nodes.length; i++) {
+    const node = manifest.nodes[i];
+    if (node.mesh === undefined) continue;
+    meshRenderers[i] = await Promise.all(buildMeshRenderer(regl, node.mesh));
+  }
 
   regl.frame(() => {
     camera(() => {
       regl.clear({ color: [1, 1, 1, 1] });
-      for (let i = 0; i < renderFns.length; i++) {
-        renderFns[i]();
-      }
+
+      // build all mesh transforms
+      const rootNodeIdx = manifest.scenes[0].nodes[0];
+      const meshTransforms = buildMeshTransforms(manifest.nodes, rootNodeIdx);
+
+      Object.entries(meshRenderers).forEach(([nodeIdx, renderers]) => {
+        renderers.forEach((renderFn) =>
+          renderFn({ localTransform: meshTransforms[nodeIdx] })
+        );
+      });
     });
   });
 };
