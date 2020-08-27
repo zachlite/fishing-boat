@@ -1,7 +1,5 @@
 import { mat4, quat, vec3 } from "gl-matrix";
 import REGL = require("regl");
-import { debug } from "console";
-import { chdir } from "process";
 import { keyframeValueForTime } from "./src/animation";
 
 const AssetUrl = "http://localhost:8080";
@@ -90,24 +88,6 @@ class VertSourceBuilder {
     `;
   }
 }
-
-const vert = `
-  precision mediump float;
-  uniform mat4 projection, view, sceneTransform;
-  attribute vec3 position, normal;
-  attribute vec2 uv;
-  varying vec2 vUv;
-  void main () {
-    gl_Position = projection * view * sceneTransform * vec4(position, 1.0);
-  }`;
-
-const frag = `
-  precision mediump float;
-  uniform vec4 baseColorFactor;
-  void main () {
-    gl_FragColor = baseColorFactor;
-  }
-`;
 
 function chunkArray(arr, size) {
   return Array.from({ length: Math.ceil(arr.length / size) }, (v, i) =>
@@ -256,8 +236,6 @@ function RenderFactory(manifest, buffer, assetNamespace) {
         const uniforms: any = {
           sceneTransform: (context, props) => props.localTransform,
         };
-
-        // how many joints are there?
 
         if (skinIdx !== undefined) {
           // get inverseBindMatrices
@@ -512,9 +490,7 @@ function getAnimations(manifest, buffer): Animation[] {
 
 window.onload = async () => {
   const regl = REGL();
-  const camera = require("regl-camera")(regl, {
-    damping: 0,
-  });
+  const camera = require("regl-camera")(regl, { damping: 0 });
 
   const assetNamespace = "RiggedFigure";
   const glTFfile = "RiggedFigure";
@@ -529,14 +505,18 @@ window.onload = async () => {
 
   const buildMeshRenderer = RenderFactory(manifest, buffer, assetNamespace);
 
-  let meshRenderers: Record<NodeIdx, REGL.DrawCommand[]> = {};
-  for (let i = 0; i < manifest.nodes.length; i++) {
-    const node = manifest.nodes[i];
-    if (node.mesh === undefined) continue;
-    meshRenderers[i] = await Promise.all(
-      buildMeshRenderer(regl, node.mesh, node.skin)
-    );
-  }
+  type MeshRendererRecord = Record<NodeIdx, REGL.DrawCommand[]>;
+  const meshRenderers: MeshRendererRecord = await manifest.nodes.reduce(
+    async (acc, node, nodeIdx) => {
+      if (node.mesh === undefined) return acc;
+      const renderersForMesh = await Promise.all(
+        buildMeshRenderer(regl, node.mesh, node.skin)
+      );
+      (await acc)[nodeIdx] = renderersForMesh;
+      return acc;
+    },
+    {}
+  );
 
   const animations = getAnimations(manifest, buffer);
   const shouldPlayAnimation = animations.length !== 0;
@@ -559,7 +539,6 @@ window.onload = async () => {
         });
       }
 
-      // build all mesh transforms
       const nodeTransforms = manifest.scenes[0].nodes.reduce((acc, nodeIdx) => {
         acc = { ...acc, ...buildNodeTransforms(manifest.nodes, nodeIdx) };
         return acc;
