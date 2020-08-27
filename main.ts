@@ -109,6 +109,12 @@ const frag = `
   }
 `;
 
+function chunkArray(arr, size) {
+  return Array.from({ length: Math.ceil(arr.length / size) }, (v, i) =>
+    arr.slice(i * size, i * size + size)
+  );
+}
+
 const numComponentsForAccessorType = {
   SCALAR: 1,
   VEC2: 2,
@@ -178,7 +184,7 @@ async function loadImage(imgpath): Promise<HTMLImageElement> {
 }
 
 function RenderFactory(manifest, buffer, assetNamespace) {
-  function buildMeshRenderFn(regl, meshIdx) {
+  function buildMeshRenderFn(regl, meshIdx, skinIdx) {
     const mesh = manifest.meshes[meshIdx];
     const fns: Promise<REGL.DrawCommand>[] = mesh.primitives.map(
       async (primitive) => {
@@ -251,6 +257,70 @@ function RenderFactory(manifest, buffer, assetNamespace) {
           sceneTransform: (context, props) => props.localTransform,
         };
 
+        // how many joints are there?
+
+        if (skinIdx !== undefined) {
+          // get inverseBindMatrices
+          // get joints and weights
+          const skin = manifest.skins[skinIdx];
+          const numJoints = manifest.skins[skinIdx].joints.length;
+          const ibmAccessor = skin.inverseBindMatrices;
+          const inverseBindMatrices = chunkArray(
+            getTypedDataView(buffer, manifest, ibmAccessor),
+            numComponentsForAccessorType["MAT4"]
+          );
+
+          function jointMatrixFn(jointIdx) {
+            return (context, props) => {
+              const jointMatrix = mat4.create();
+              mat4.multiply(
+                jointMatrix,
+                props.globalJointTransforms[skin.joints[jointIdx]],
+                inverseBindMatrices[jointIdx]
+              );
+              return jointMatrix;
+            };
+          }
+
+          for (let i = 0; i < numJoints; i++) {
+            uniforms[`jointMatrix[${i}]`] = jointMatrixFn(i);
+          }
+
+          const jointAccessorIdx = primitive.attributes.JOINTS_0;
+          const jointAccessor = manifest.accessors[jointAccessorIdx];
+          const jointBufferView =
+            manifest.bufferViews[jointAccessor.bufferView];
+
+          attributes["joint"] = {
+            buffer: regl.buffer(
+              new Uint16Array(
+                buffer,
+                jointBufferView.byteOffset,
+                jointBufferView.byteLength / 2
+              )
+            ),
+            offset: jointAccessor.byteOffset,
+            stride: jointBufferView.byteStride || 0,
+          };
+
+          const weightAccessorIdx = primitive.attributes.WEIGHTS_0;
+          const weightAccessor = manifest.accessors[weightAccessorIdx];
+          const weightBufferView =
+            manifest.bufferViews[weightAccessor.bufferView];
+
+          attributes["weight"] = {
+            buffer: regl.buffer(
+              new Float32Array(
+                buffer,
+                weightBufferView.byteOffset,
+                weightBufferView.byteLength / 4
+              )
+            ),
+            offset: weightAccessor.byteOffset,
+            stride: weightBufferView.byteStride || 0,
+          };
+        }
+
         if (material.pbrMetallicRoughness.baseColorFactor) {
           uniforms.baseColorFactor =
             material.pbrMetallicRoughness.baseColorFactor;
@@ -297,6 +367,14 @@ function RenderFactory(manifest, buffer, assetNamespace) {
           fragSourceBuilder.setVarying("varying highp vec2 vuv;");
         }
 
+        if (attributes.joint) {
+          vertSourceBuilder.setAttribute("attribute vec4 joint;");
+        }
+
+        if (attributes.weight) {
+          vertSourceBuilder.setAttribute("attribute vec4 weight;");
+        }
+
         if (uniforms.baseColorFactor) {
           fragSourceBuilder.setUniform("uniform vec4 baseColorFactor;");
         }
@@ -309,9 +387,27 @@ function RenderFactory(manifest, buffer, assetNamespace) {
           fragSourceBuilder.setUniform("uniform sampler2D tex;");
         }
 
+        if (skinIdx !== undefined) {
+          const numJoints = manifest.skins[skinIdx].joints.length;
+          vertSourceBuilder.setUniform(
+            `uniform mat4 jointMatrix[${numJoints}];`
+          );
+        }
+
+        const skinMatrixSrc = `
+          mat4 skinMatrix = weight.x * jointMatrix[int(joint.x)] +
+                            weight.y * jointMatrix[int(joint.y)] +
+                            weight.z * jointMatrix[int(joint.z)] +
+                            weight.w * jointMatrix[int(joint.w)];
+        `;
+
+        const localTransform =
+          skinIdx !== undefined ? "skinMatrix" : "sceneTransform";
+
         const vert = vertSourceBuilder.build(`
+                  ${skinIdx !== undefined ? skinMatrixSrc : ""}
                   ${attributes.uv ? "vuv = uv;" : ""}
-                  gl_Position = projection * view * sceneTransform * vec4(position, 1.0);
+                  gl_Position = projection * view * ${localTransform} * vec4(position, 1.0);
                   `);
 
         const frag = fragSourceBuilder.build(
@@ -348,7 +444,7 @@ function buildLocalTransform(node) {
   );
 }
 
-function buildMeshTransforms(
+function buildNodeTransforms(
   nodes,
   nodeIdx,
   parentTransform = mat4.create()
@@ -365,17 +461,11 @@ function buildMeshTransforms(
   (node.children || []).forEach((nodeIdx) => {
     children = {
       ...children,
-      ...buildMeshTransforms(nodes, nodeIdx, globalTransform),
+      ...buildNodeTransforms(nodes, nodeIdx, globalTransform),
     };
   });
 
   return { [nodeIdx]: globalTransform, ...children };
-}
-
-function chunkArray(arr, size) {
-  return Array.from({ length: Math.ceil(arr.length / size) }, (v, i) =>
-    arr.slice(i * size, i * size + size)
-  );
 }
 
 interface Animation {
@@ -426,9 +516,9 @@ window.onload = async () => {
     damping: 0,
   });
 
-  const assetNamespace = "CesiumMilkTruck";
-  const glTFfile = "CesiumMilkTruck";
-  const binFile = "CesiumMilkTruck_data";
+  const assetNamespace = "RiggedFigure";
+  const glTFfile = "RiggedFigure";
+  const binFile = "RiggedFigure0";
 
   const { manifest, buffer } = await fetchglTF(
     `${assetNamespace}/${glTFfile}.gltf`,
@@ -443,7 +533,9 @@ window.onload = async () => {
   for (let i = 0; i < manifest.nodes.length; i++) {
     const node = manifest.nodes[i];
     if (node.mesh === undefined) continue;
-    meshRenderers[i] = await Promise.all(buildMeshRenderer(regl, node.mesh));
+    meshRenderers[i] = await Promise.all(
+      buildMeshRenderer(regl, node.mesh, node.skin)
+    );
   }
 
   const animations = getAnimations(manifest, buffer);
@@ -468,14 +560,17 @@ window.onload = async () => {
       }
 
       // build all mesh transforms
-      const meshTransforms = manifest.scenes[0].nodes.reduce((acc, nodeIdx) => {
-        acc = { ...acc, ...buildMeshTransforms(manifest.nodes, nodeIdx) };
+      const nodeTransforms = manifest.scenes[0].nodes.reduce((acc, nodeIdx) => {
+        acc = { ...acc, ...buildNodeTransforms(manifest.nodes, nodeIdx) };
         return acc;
       }, {});
 
       Object.entries(meshRenderers).forEach(([nodeIdx, renderers]) => {
         renderers.forEach((renderFn) =>
-          renderFn({ localTransform: meshTransforms[nodeIdx] })
+          renderFn({
+            localTransform: nodeTransforms[nodeIdx],
+            globalJointTransforms: nodeTransforms,
+          })
         );
       });
     });
