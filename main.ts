@@ -2,6 +2,7 @@ import { mat4, quat, vec3 } from "gl-matrix";
 import REGL = require("regl");
 import { debug } from "console";
 import { chdir } from "process";
+import { keyframeValueForTime } from "./src/animation";
 
 const AssetUrl = "http://localhost:8080";
 
@@ -353,9 +354,7 @@ function buildMeshTransforms(
   parentTransform = mat4.create()
 ): Record<NodeIdx, mat4> {
   const node = nodes[nodeIdx];
-
   const localTransform = buildLocalTransform(node);
-
   const globalTransform = mat4.multiply(
     mat4.create(),
     parentTransform,
@@ -371,6 +370,54 @@ function buildMeshTransforms(
   });
 
   return { [nodeIdx]: globalTransform, ...children };
+}
+
+function chunkArray(arr, size) {
+  return Array.from({ length: Math.ceil(arr.length / size) }, (v, i) =>
+    arr.slice(i * size, i * size + size)
+  );
+}
+
+interface Animation {
+  name: string;
+  channels: {
+    targetNode: number;
+    targetPath: "rotation" | "translation";
+    keyframes: any[];
+    keyframeValues: any[];
+    interpolation: "LINEAR";
+  }[];
+}
+
+function getAnimations(manifest, buffer): Animation[] {
+  if (manifest.animations === undefined || manifest.animations.length === 0)
+    return [];
+
+  return manifest.animations.map((animation, idx) => {
+    const name = animation.name || `animation_${idx}`;
+    const channels = animation.channels.map((channel) => {
+      const sampler = animation.samplers[channel.sampler];
+      const interpolation = sampler.interpolation;
+
+      const keyframes = Array.from(
+        getTypedDataView(buffer, manifest, sampler.input)
+      );
+
+      const keyframeValues = chunkArray(
+        getTypedDataView(buffer, manifest, sampler.output),
+        numComponentsForAccessorType[manifest.accessors[sampler.output].type]
+      );
+
+      return {
+        targetNode: channel.target.node,
+        targetPath: channel.target.path,
+        keyframes,
+        keyframeValues,
+        interpolation,
+      };
+    });
+    return { name, channels };
+  });
 }
 
 window.onload = async () => {
@@ -399,13 +446,32 @@ window.onload = async () => {
     meshRenderers[i] = await Promise.all(buildMeshRenderer(regl, node.mesh));
   }
 
-  regl.frame(() => {
+  const animations = getAnimations(manifest, buffer);
+  const shouldPlayAnimation = animations.length !== 0;
+  const activeAnimation = 0; // idx;
+
+  regl.frame((context) => {
+    const time = context.time;
     camera(() => {
       regl.clear({ color: [1, 1, 1, 1] });
 
+      if (shouldPlayAnimation) {
+        animations[activeAnimation].channels.forEach((channel) => {
+          manifest.nodes[channel.targetNode][
+            channel.targetPath
+          ] = keyframeValueForTime(
+            channel.keyframes,
+            channel.keyframeValues,
+            time
+          );
+        });
+      }
+
       // build all mesh transforms
-      const rootNodeIdx = manifest.scenes[0].nodes[0];
-      const meshTransforms = buildMeshTransforms(manifest.nodes, rootNodeIdx);
+      const meshTransforms = manifest.scenes[0].nodes.reduce((acc, nodeIdx) => {
+        acc = { ...acc, ...buildMeshTransforms(manifest.nodes, nodeIdx) };
+        return acc;
+      }, {});
 
       Object.entries(meshRenderers).forEach(([nodeIdx, renderers]) => {
         renderers.forEach((renderFn) =>
