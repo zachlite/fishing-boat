@@ -87,6 +87,93 @@ class VertSourceBuilder {
   }
 }
 
+interface Material {
+  pbrMetallicRoughness: any;
+  normalTexture: any;
+}
+
+interface MaterialUniforms {
+  baseColorFactor?: [number, number, number, number];
+  baseColorTexture?: REGL.Texture2D;
+  metallicFactor?: number;
+  roughnessFactor?: number;
+  metallicRoughnessTexture?: REGL.Texture2D;
+  normalTexture?: REGL.Texture2D;
+  occlusionTexture?: REGL.Texture2D;
+  emissiveTexture?: REGL.Texture2D;
+  emissiveFactor?: [number, number, number];
+}
+
+async function buildMaterialUniforms(
+  manifest,
+  material: Material,
+  regl: REGL.Regl,
+  assetNamespace: string
+): Promise<MaterialUniforms> {
+  async function loadMaterialTexture(idx) {
+    const texture = manifest.textures[idx];
+    const uri = manifest.images[texture.source].uri;
+    const image = await loadImage(`${assetNamespace}/${uri}`);
+
+    const samplers = manifest.samplers || [];
+    const sampler = samplers[texture.sampler];
+
+    const mag = glEnumLookup[sampler?.magFilter] || "nearest";
+    const min = glEnumLookup[sampler?.minFilter] || "nearest";
+    const wrapS = glEnumLookup[sampler?.wrapS] || "repeat";
+    const wrapT = glEnumLookup[sampler?.wrapT] || "repeat";
+
+    return regl.texture({ data: image, mag, min, wrapS, wrapT, mipmap: true });
+  }
+
+  let uniforms: MaterialUniforms = {};
+
+  const {
+    baseColorFactor,
+    baseColorTexture,
+    metallicFactor,
+    roughnessFactor,
+    metallicRoughnessTexture,
+    normalTexture,
+    occlusionTexture,
+    emissiveTexture,
+    emissiveFactor,
+  } = material.pbrMetallicRoughness;
+
+  uniforms.baseColorFactor = baseColorFactor || [1, 1, 1, 1];
+  uniforms.metallicFactor = metallicFactor || 1;
+  uniforms.roughnessFactor = roughnessFactor || 1;
+  uniforms.emissiveFactor = emissiveFactor || [0, 0, 0];
+
+  if (baseColorTexture) {
+    uniforms.baseColorTexture = await loadMaterialTexture(
+      baseColorTexture.index
+    );
+  }
+
+  if (metallicRoughnessTexture) {
+    uniforms.metallicRoughnessTexture = await loadMaterialTexture(
+      metallicRoughnessTexture.index
+    );
+  }
+
+  if (normalTexture) {
+    uniforms.normalTexture = await loadMaterialTexture(normalTexture.index);
+  }
+
+  if (occlusionTexture) {
+    uniforms.occlusionTexture = await loadMaterialTexture(
+      occlusionTexture.index
+    );
+  }
+
+  if (emissiveTexture) {
+    uniforms.emissiveTexture = await loadMaterialTexture(emissiveTexture.index);
+  }
+
+  return uniforms;
+}
+
 export function RenderFactory(manifest, buffer, assetNamespace) {
   function buildMeshRenderFn(regl, meshIdx, skinIdx) {
     const mesh = manifest.meshes[meshIdx];
@@ -155,9 +242,10 @@ export function RenderFactory(manifest, buffer, assetNamespace) {
         /// material
         const materialIdx = primitive.material;
         const material = manifest.materials[materialIdx];
+        // TODO: handle default material
 
         // assume pbrmetallicroughness:
-        const uniforms: any = {
+        let uniforms: { sceneTransform: any } & MaterialUniforms = {
           sceneTransform: (context, props) => props.localTransform,
         };
 
@@ -223,45 +311,36 @@ export function RenderFactory(manifest, buffer, assetNamespace) {
           };
         }
 
-        if (material.pbrMetallicRoughness.baseColorFactor) {
-          uniforms.baseColorFactor =
-            material.pbrMetallicRoughness.baseColorFactor;
-        }
-        if (material.pbrMetallicRoughness.baseColorTexture) {
-          const texIndex =
-            material.pbrMetallicRoughness.baseColorTexture.index || 0;
-          const texture = manifest.textures[texIndex];
-          const uri = manifest.images[texture.source].uri;
-          const image = await loadImage(`${assetNamespace}/${uri}`);
+        uniforms = {
+          ...uniforms,
+          ...(await buildMaterialUniforms(
+            manifest,
+            material,
+            regl,
+            assetNamespace
+          )),
+        };
 
-          const samplers = manifest.samplers || [];
-          const sampler = samplers[texture.sampler];
+        // build uniforms based on material properties
 
-          const mag = glEnumLookup[sampler?.magFilter] || "nearest";
-          const min = glEnumLookup[sampler?.minFilter] || "nearest";
-          const wrapS = glEnumLookup[sampler?.wrapS] || "repeat";
-          const wrapT = glEnumLookup[sampler?.wrapT] || "repeat";
-
-          uniforms.tex = regl.texture({
-            data: image,
-            mag,
-            min,
-            wrapS,
-            wrapT,
-            mipmap: true,
-          });
-        }
+        // build shader support for pbrMetallicRougnhness material
+        // lights?
 
         const vertSourceBuilder = new VertSourceBuilder();
         const fragSourceBuilder = new FragSourceBuilder();
 
         vertSourceBuilder.setUniform("uniform mat4 projection, view;");
+        vertSourceBuilder.setVarying("varying vec3 vWorldPos;");
+        fragSourceBuilder.setVarying("varying vec3 vWorldPos;");
+        fragSourceBuilder.setUniform("uniform vec3 eye;");
 
         if (attributes.position) {
           vertSourceBuilder.setAttribute("attribute vec3 position;");
         }
         if (attributes.normal) {
           vertSourceBuilder.setAttribute("attribute vec3 normal;");
+          vertSourceBuilder.setVarying("varying vec3 vNormal;");
+          fragSourceBuilder.setVarying("varying vec3 vNormal;");
         }
         if (attributes.uv) {
           vertSourceBuilder.setAttribute("attribute vec2 uv;");
@@ -277,16 +356,32 @@ export function RenderFactory(manifest, buffer, assetNamespace) {
           vertSourceBuilder.setAttribute("attribute vec4 weight;");
         }
 
-        if (uniforms.baseColorFactor) {
-          fragSourceBuilder.setUniform("uniform vec4 baseColorFactor;");
-        }
-
-        if (uniforms.sceneTransform) {
+        if (uniforms.sceneTransform !== undefined) {
           vertSourceBuilder.setUniform("uniform mat4 sceneTransform;");
         }
 
-        if (uniforms.tex) {
-          fragSourceBuilder.setUniform("uniform sampler2D tex;");
+        // PBR material data
+        fragSourceBuilder.setUniform("uniform vec4 baseColorFactor;");
+        fragSourceBuilder.setUniform("uniform float metallicFactor;");
+        fragSourceBuilder.setUniform("uniform float roughnessFactor;");
+        fragSourceBuilder.setUniform("uniform vec3 emissiveFactor;");
+
+        if (uniforms.baseColorTexture !== undefined) {
+          fragSourceBuilder.setUniform("uniform sampler2D baseColorTexture;");
+        }
+        if (uniforms.metallicRoughnessTexture !== undefined) {
+          fragSourceBuilder.setUniform(
+            "uniform sampler2D metallicRoughnessTexture;"
+          );
+        }
+        if (uniforms.normalTexture !== undefined) {
+          fragSourceBuilder.setUniform("uniform sampler2D normalTexture;");
+        }
+        if (uniforms.occlusionTexture !== undefined) {
+          fragSourceBuilder.setUniform("uniform sampler2D occlusionTexture;");
+        }
+        if (uniforms.emissiveTexture !== undefined) {
+          fragSourceBuilder.setUniform("uniform sampler2D emissiveTexture;");
         }
 
         if (skinIdx !== undefined) {
@@ -303,18 +398,83 @@ export function RenderFactory(manifest, buffer, assetNamespace) {
                             weight.w * jointMatrix[int(joint.w)];
         `;
 
+        // SUPPORT:
+        // EmissiveMap
+        // OcclusionMap
+        // NormalMap
+
+        function buildNormalSrc(texture) {
+          return texture
+            ? `vec3 N = texture2D(normalTexture, vuv).rgb; N = normalize(N * 2.0 - 1.0);`
+            : `vec3 N = normalize(vNormal);`;
+        }
+
+        function buildMetallicSrc(texture) {
+          return texture
+            ? `float metallic = texture2D(metallicRoughnessTexture, vuv).b * metallicFactor;`
+            : `float metallic = metallicFactor;`;
+        }
+
+        function buildRougnessSrc(texture) {
+          return texture
+            ? `float roughness = texture2D(metallicRoughnessTexture, vuv).g * roughnessFactor;`
+            : `float roughness = roughnessFactor;`;
+        }
+
+        function buildBaseColorSrc(texture) {
+          return texture
+            ? `vec3 baseColor = texture2D(baseColorTexture, vuv) * baseColorFactor;`
+            : `vec3 baseColor = baseColorFactor;`;
+        }
+
+        const BRDFSrc = `
+
+          // constants:
+          vec3 dialectricSpecular = vec3(.04);
+          vec3 black = vec3(0.0);
+
+          // Metallic:
+          ${buildMetallicSrc(uniforms.metallicRoughnessTexture)}
+
+          // Roughness:
+          ${buildRougnessSrc(uniforms.metallicRoughnessTexture)}
+
+          // Base Color:
+          ${buildBaseColorSrc(uniforms.baseColorTexture)}
+
+          // Normal:
+          ${buildNormalSrc(uniforms.normalTexture)}
+          
+          vec3 Cdiff = lerp(baseColor.rgb * (1.0 - dialectricSpecular.r), black, metallic);
+          vec3 F0 = lerp(dialectricSpecular, baseColor.rgb, metallic);
+          float alpha = roughness * roughness;
+        
+
+          vec3 LightDir = vec3(1, 0, 0);
+          vec3 V = normalize(eye - vWorldPos);
+          vec3 L = normalize(LightDir - vWorldPos);
+          vec3 H = normalize(L + V);
+
+
+          // gl_FragColor = kd * f_lambert + ks * f_cooktorrance;
+
+
+        `;
+
         const localTransform =
           skinIdx !== undefined ? "skinMatrix" : "sceneTransform";
 
         const vert = vertSourceBuilder.build(`
                   ${skinIdx !== undefined ? skinMatrixSrc : ""}
                   ${attributes.uv ? "vuv = uv;" : ""}
+                  vNormal = normal;
+                  vWorldPos = (${localTransform} * vec4(position, 1.0)).xyz;
                   gl_Position = projection * view * ${localTransform} * vec4(position, 1.0);
                   `);
 
         const frag = fragSourceBuilder.build(
-          uniforms.tex
-            ? `gl_FragColor = texture2D(tex, vuv);`
+          uniforms.baseColorTexture
+            ? `gl_FragColor = texture2D(baseColorTexture, vuv) * baseColorFactor;`
             : `gl_FragColor = baseColorFactor;`
         );
 

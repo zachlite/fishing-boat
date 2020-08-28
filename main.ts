@@ -141,7 +141,9 @@ window.onload = async () => {
 
   regl.frame((context) => {
     const time = context.time;
-    camera(() => {
+
+    camera((cameraContext) => {
+      // console.log(cameraContext.eye, cameraContext.center);
       regl.clear({ color: [1, 1, 1, 1] });
 
       if (shouldPlayAnimation) {
