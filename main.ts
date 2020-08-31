@@ -1,4 +1,4 @@
-import { mat4, quat, vec3 } from "gl-matrix";
+import { mat4, quat, vec3, glMatrix } from "gl-matrix";
 import REGL = require("regl");
 import { keyframeValueForTime } from "./src/animation";
 import { RenderFactory } from "./src/render-factory";
@@ -102,8 +102,11 @@ function getAnimations(manifest, buffer): Animation[] {
 }
 
 window.onload = async () => {
-  const regl = REGL({ extensions: ["oes_element_index_uint"] });
-  const camera = require("regl-camera")(regl, { damping: 0 });
+  const regl = REGL({ extensions: ["oes_element_index_uint", "EXT_sRGB"] });
+  const camera = require("regl-camera")(regl, {
+    damping: 0,
+    // center: [0, 1, 0],
+  });
 
   const assetNamespace = "avocado";
   const glTFfile = "Avocado";
@@ -119,6 +122,7 @@ window.onload = async () => {
   const buildMeshRenderer = RenderFactory(manifest, buffer, assetNamespace);
 
   type MeshRendererRecord = Record<NodeIdx, REGL.DrawCommand[]>;
+  // TODO: make this sync.  fetch textures, and pass to renderFactory.
   const meshRenderers: MeshRendererRecord = await manifest.nodes.reduce(
     async (acc, node, nodeIdx) => {
       if (node.mesh === undefined) return acc;
@@ -139,11 +143,61 @@ window.onload = async () => {
   const LightDirection = [1, 0, 0];
   const LightColor = [1, 1, 1];
 
+  const transform = {
+    translation: [0, 0, 0],
+    rotation: [0, 0, 0],
+    scale: [5, 5, 5],
+  };
+
+  const modelTransform = mat4.fromRotationTranslationScale(
+    mat4.create(),
+    quat.fromEuler(
+      quat.create(),
+      transform.rotation[0],
+      transform.rotation[1],
+      transform.rotation[2]
+    ),
+    transform.translation as any,
+    transform.scale as any
+  );
+
+  const projection = mat4.create();
+  const lookAt = mat4.create();
+  const cameraTransform = {
+    eye: [0, 0, 4.00001],
+    look: [0, 0, 0],
+    up: [0, 1, 0],
+  };
+  const cameraContext = regl({
+    context: {
+      projection: function (context) {
+        return mat4.perspective(
+          projection,
+          glMatrix.toRadian(45),
+          context.viewportWidth / context.viewportHeight,
+          0.01,
+          1000
+        );
+      },
+      view: mat4.lookAt(
+        lookAt,
+        cameraTransform.eye as any,
+        cameraTransform.look as any,
+        cameraTransform.up as any
+      ),
+      eye: cameraTransform.eye,
+    },
+    uniforms: {
+      projection: regl.context("projection" as any),
+      view: regl.context("view" as any),
+      eye: regl.context("eye" as any),
+    },
+  });
+
   regl.frame((context) => {
     const time = context.time;
 
-    camera((cameraContext) => {
-      // console.log(cameraContext.eye, cameraContext.center);
+    camera((c) => {
       regl.clear({ color: [1, 1, 1, 1] });
 
       if (shouldPlayAnimation) {
@@ -166,6 +220,7 @@ window.onload = async () => {
       Object.entries(meshRenderers).forEach(([nodeIdx, renderers]) => {
         renderers.forEach((renderFn) =>
           renderFn({
+            modelTransform,
             localTransform: nodeTransforms[nodeIdx],
             globalJointTransforms: nodeTransforms,
           })

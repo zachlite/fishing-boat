@@ -17,10 +17,12 @@ async function loadImage(imgpath): Promise<HTMLImageElement> {
 class FragSourceBuilder {
   private uniforms;
   private varyings;
+  private fns;
 
   constructor() {
     this.uniforms = ``;
     this.varyings = ``;
+    this.fns = ``;
   }
 
   setUniform(uniforms) {
@@ -31,8 +33,13 @@ class FragSourceBuilder {
     this.varyings += varyings;
   }
 
+  setFunction(fn) {
+    this.fns += fn;
+  }
+
   build(mainSource: string) {
     const precision = `precision mediump float;`;
+    const constants = `float pi = 3.141592653;`;
 
     const main = `void main () {
         ${mainSource}
@@ -42,6 +49,8 @@ class FragSourceBuilder {
       ${precision}
       ${this.uniforms}
       ${this.varyings}
+      ${constants}
+      ${this.fns}
       ${main}
     `;
   }
@@ -88,8 +97,17 @@ class VertSourceBuilder {
 }
 
 interface Material {
-  pbrMetallicRoughness: any;
+  pbrMetallicRoughness: {
+    baseColorTexture?: any;
+    baseColorFactor?: [number, number, number, number];
+    metallicFactor?: number;
+    roughnessFactor?: number;
+    metallicRoughnessTexture?: any;
+  };
   normalTexture: any;
+  emissiveTexture: any;
+  occlusionTexture: any;
+  emissiveFactor: [number, number, number];
 }
 
 interface MaterialUniforms {
@@ -110,7 +128,7 @@ async function buildMaterialUniforms(
   regl: REGL.Regl,
   assetNamespace: string
 ): Promise<MaterialUniforms> {
-  async function loadMaterialTexture(idx) {
+  async function loadMaterialTexture(idx, textureFormat = undefined) {
     const texture = manifest.textures[idx];
     const uri = manifest.images[texture.source].uri;
     const image = await loadImage(`${assetNamespace}/${uri}`);
@@ -123,7 +141,15 @@ async function buildMaterialUniforms(
     const wrapS = glEnumLookup[sampler?.wrapS] || "repeat";
     const wrapT = glEnumLookup[sampler?.wrapT] || "repeat";
 
-    return regl.texture({ data: image, mag, min, wrapS, wrapT, mipmap: true });
+    return regl.texture({
+      data: image,
+      mag,
+      min,
+      wrapS,
+      wrapT,
+      mipmap: textureFormat !== "srgb",
+      // format: textureFormat || "rgba",
+    });
   }
 
   let uniforms: MaterialUniforms = {};
@@ -134,20 +160,26 @@ async function buildMaterialUniforms(
     metallicFactor,
     roughnessFactor,
     metallicRoughnessTexture,
+  } = material.pbrMetallicRoughness;
+
+  const {
     normalTexture,
     occlusionTexture,
     emissiveTexture,
     emissiveFactor,
-  } = material.pbrMetallicRoughness;
+  } = material;
 
   uniforms.baseColorFactor = baseColorFactor || [1, 1, 1, 1];
-  uniforms.metallicFactor = metallicFactor || 1;
-  uniforms.roughnessFactor = roughnessFactor || 1;
+
+  uniforms.metallicFactor = metallicFactor === undefined ? 1 : metallicFactor;
+  uniforms.roughnessFactor =
+    roughnessFactor === undefined ? 1 : roughnessFactor;
   uniforms.emissiveFactor = emissiveFactor || [0, 0, 0];
 
   if (baseColorTexture) {
     uniforms.baseColorTexture = await loadMaterialTexture(
-      baseColorTexture.index
+      baseColorTexture.index,
+      "srgb"
     );
   }
 
@@ -245,8 +277,12 @@ export function RenderFactory(manifest, buffer, assetNamespace) {
         // TODO: handle default material
 
         // assume pbrmetallicroughness:
-        let uniforms: { sceneTransform: any } & MaterialUniforms = {
+        let uniforms: {
+          sceneTransform: any;
+          modelTransform: any;
+        } & MaterialUniforms = {
           sceneTransform: (context, props) => props.localTransform,
+          modelTransform: (context, props) => props.modelTransform,
         };
 
         if (skinIdx !== undefined) {
@@ -329,7 +365,9 @@ export function RenderFactory(manifest, buffer, assetNamespace) {
         const vertSourceBuilder = new VertSourceBuilder();
         const fragSourceBuilder = new FragSourceBuilder();
 
-        vertSourceBuilder.setUniform("uniform mat4 projection, view;");
+        vertSourceBuilder.setUniform(
+          "uniform mat4 projection, view, modelTransform;"
+        );
         vertSourceBuilder.setVarying("varying vec3 vWorldPos;");
         fragSourceBuilder.setVarying("varying vec3 vWorldPos;");
         fragSourceBuilder.setUniform("uniform vec3 eye;");
@@ -405,7 +443,9 @@ export function RenderFactory(manifest, buffer, assetNamespace) {
 
         function buildNormalSrc(texture) {
           return texture
-            ? `vec3 N = texture2D(normalTexture, vuv).rgb; N = normalize(N * 2.0 - 1.0);`
+            ? `vec3 N = texture2D(normalTexture, vuv).rgb;
+               N = normalize(N * 2.0 - 1.0);
+              `
             : `vec3 N = normalize(vNormal);`;
         }
 
@@ -423,16 +463,68 @@ export function RenderFactory(manifest, buffer, assetNamespace) {
 
         function buildBaseColorSrc(texture) {
           return texture
-            ? `vec3 baseColor = texture2D(baseColorTexture, vuv) * baseColorFactor;`
-            : `vec3 baseColor = baseColorFactor;`;
+            ? `vec4 baseColor = baseColorFactor;
+              baseColor *= sRGBToLinear(texture2D(baseColorTexture, vuv));
+              `
+            : `vec4 baseColor = baseColorFactor;`;
         }
 
+        const FresnelSchlickSrc = `
+          vec3 FresnelSchlick(vec3 F0, float VdotH) {
+            return F0 + (1.0 - F0) * pow(1.0 - VdotH, 5.0);
+          }
+        `;
+
+        const MicrofacetDistributionSource = `
+          float MicrofacetDistribution(float NdotH, float a) {
+            float a2     = a*a;
+            float NdotH2 = NdotH*NdotH;
+            float num   = a2;
+            float denom = (NdotH2 * (a2 - 1.0) + 1.0);
+            denom = pi * denom * denom;
+            return num / denom;
+          }
+        `;
+
+        // assume direct lighting (non image based)
+        const GeometricOcclusionSource = `
+          float GeometricOcclusion(float NdotL, float NdotV, float alpha) {
+            float term1 = NdotL * sqrt(NdotV * NdotV * (1.0 - alpha * alpha) + (alpha * alpha));
+            float term2 = NdotV * sqrt(NdotL * NdotL * (1.0 - alpha * alpha) + (alpha * alpha));
+            return .5 / (term1 + term2);
+          }
+        `;
+
+        // const sRGBToLinearSrc = `
+        //   vec4 sRGBToLinear(vec4 value) {
+        //     return vec4( mix( pow( value.rgb * 0.9478672986 + vec3( 0.0521327014 ), vec3( 2.4 ) ), value.rgb * 0.0773993808, vec3( lessThanEqual( value.rgb, vec3( 0.04045 ) ) ) ), value.a );
+        //   }
+        // `;
+
+        fragSourceBuilder.setFunction(FresnelSchlickSrc);
+        fragSourceBuilder.setFunction(MicrofacetDistributionSource);
+        fragSourceBuilder.setFunction(GeometricOcclusionSource);
+        // fragSourceBuilder.setFunction(sRGBToLinearSrc);
+        fragSourceBuilder.setFunction(`
+          const float GAMMA = 2.2;
+          const float INV_GAMMA = 1.0 / GAMMA;
+
+          vec3 linearTosRGB(vec3 color) {
+            return pow(color, vec3(INV_GAMMA));
+          }
+          
+          vec3 sRGBToLinear(vec3 srgbIn) {
+            return vec3(pow(srgbIn.xyz, vec3(GAMMA)));
+          }
+
+          vec4 sRGBToLinear(vec4 srgbIn) {
+            return vec4(sRGBToLinear(srgbIn.xyz), srgbIn.w);
+          }
+        `);
+
+        console.log(uniforms);
+
         const BRDFSrc = `
-
-          // constants:
-          vec3 dialectricSpecular = vec3(.04);
-          vec3 black = vec3(0.0);
-
           // Metallic:
           ${buildMetallicSrc(uniforms.metallicRoughnessTexture)}
 
@@ -443,22 +535,49 @@ export function RenderFactory(manifest, buffer, assetNamespace) {
           ${buildBaseColorSrc(uniforms.baseColorTexture)}
 
           // Normal:
-          ${buildNormalSrc(uniforms.normalTexture)}
           
-          vec3 Cdiff = lerp(baseColor.rgb * (1.0 - dialectricSpecular.r), black, metallic);
-          vec3 F0 = lerp(dialectricSpecular, baseColor.rgb, metallic);
+          vec3 N = normalize(vNormal);
+          // vec3 N = texture2D(normalTexture, vuv).rgb;
+          // N = normalize(N * 2.0 - 1.0); // BROKEN
+
+          // constants:
+          vec3 ambient = vec3(.05) * baseColor.rgb;
+          vec3 LightDir = vec3(1.0, 0.0, 0.0); // assumed lightDirection
+          vec3 radiance = vec3(1.0); // assumed lightColor
+         
+          vec3 dialectricSpecular = vec3(.04);
+          vec3 black = vec3(0.0);
+
+          vec3 Cdiff = mix(baseColor.rgb * (1.0 - dialectricSpecular.r), black, metallic);
+          vec3 F0 = mix(dialectricSpecular, baseColor.rgb, metallic);
           float alpha = roughness * roughness;
         
 
-          vec3 LightDir = vec3(1, 0, 0);
           vec3 V = normalize(eye - vWorldPos);
-          vec3 L = normalize(LightDir - vWorldPos);
+          vec3 L = normalize(-LightDir);
           vec3 H = normalize(L + V);
 
+          float VdotH = clamp(dot(V, H), 0.0, 1.0);
+          float NdotL = clamp(dot(N, L), 0.0, 1.0);
+          float NdotV = clamp(dot(N, V), 0.0, 1.0);
+          float NdotH = clamp(dot(N, H), 0.0, 1.0);
 
-          // gl_FragColor = kd * f_lambert + ks * f_cooktorrance;
+          vec3 F = FresnelSchlick(F0, VdotH);
+          float D = MicrofacetDistribution(NdotH, alpha);
+          float Vis = GeometricOcclusion(NdotL, NdotV, alpha);
 
+          vec3 diffuse = Cdiff / pi;
+          vec3 fdiffuse = (1.0 - F) * diffuse;
+          vec3 fspecular = F * Vis * D;
 
+          // outgoing radiance - sum for each light source
+          vec3 Lo = (fdiffuse + fspecular) * radiance * NdotL;
+          vec3 color = ambient + Lo; 
+          
+          // gamma correction
+          color = linearTosRGB(color);
+
+          gl_FragColor = vec4(fspecular, 1.0);
         `;
 
         const localTransform =
@@ -468,15 +587,12 @@ export function RenderFactory(manifest, buffer, assetNamespace) {
                   ${skinIdx !== undefined ? skinMatrixSrc : ""}
                   ${attributes.uv ? "vuv = uv;" : ""}
                   vNormal = normal;
-                  vWorldPos = (${localTransform} * vec4(position, 1.0)).xyz;
-                  gl_Position = projection * view * ${localTransform} * vec4(position, 1.0);
+                  vec4 pos = modelTransform * ${localTransform} * vec4(position, 1.0);
+                  vWorldPos = vec3(pos.xyz) / pos.w; 
+                  gl_Position = projection * view * pos;
                   `);
 
-        const frag = fragSourceBuilder.build(
-          uniforms.baseColorTexture
-            ? `gl_FragColor = texture2D(baseColorTexture, vuv) * baseColorFactor;`
-            : `gl_FragColor = baseColorFactor;`
-        );
+        const frag = fragSourceBuilder.build(BRDFSrc);
 
         return regl({
           vert,
