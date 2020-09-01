@@ -102,7 +102,13 @@ function getAnimations(manifest, buffer): Animation[] {
 }
 
 window.onload = async () => {
-  const regl = REGL({ extensions: ["oes_element_index_uint", "EXT_sRGB"] });
+  const regl = REGL({
+    extensions: [
+      "oes_element_index_uint",
+      "EXT_sRGB",
+      "OES_standard_derivatives",
+    ],
+  });
   const camera = require("regl-camera")(regl, {
     damping: 0,
     // center: [0, 1, 0],
@@ -146,7 +152,7 @@ window.onload = async () => {
   const transform = {
     translation: [0, 0, 0],
     rotation: [0, 0, 0],
-    scale: [5, 5, 5],
+    scale: [1, 1, 1],
   };
 
   const modelTransform = mat4.fromRotationTranslationScale(
@@ -198,7 +204,7 @@ window.onload = async () => {
     const time = context.time;
 
     camera((c) => {
-      regl.clear({ color: [1, 1, 1, 1] });
+      regl.clear({ color: [0, 0, 0, 1] });
 
       if (shouldPlayAnimation) {
         animations[activeAnimation].channels.forEach((channel) => {

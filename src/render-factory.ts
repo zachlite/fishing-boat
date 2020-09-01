@@ -4,6 +4,7 @@ import { numComponentsForAccessorType, glEnumLookup } from "./gltf-constants";
 import { mat4 } from "gl-matrix";
 import { chunkArray } from "./utils";
 import { AssetUrl } from "./constants";
+const calcNormals = require("angle-normals");
 
 async function loadImage(imgpath): Promise<HTMLImageElement> {
   return new Promise((resolve) => {
@@ -47,6 +48,7 @@ class FragSourceBuilder {
 
     return `
       ${precision}
+      #extension GL_OES_standard_derivatives : enable
       ${this.uniforms}
       ${this.varyings}
       ${constants}
@@ -141,13 +143,15 @@ async function buildMaterialUniforms(
     const wrapS = glEnumLookup[sampler?.wrapS] || "repeat";
     const wrapT = glEnumLookup[sampler?.wrapT] || "repeat";
 
+    const mipmap = min === "nearest mipmap linear";
+
     return regl.texture({
       data: image,
       mag,
       min,
       wrapS,
       wrapT,
-      mipmap: textureFormat !== "srgb",
+      mipmap,
       // format: textureFormat || "rgba",
     });
   }
@@ -228,6 +232,15 @@ export function RenderFactory(manifest, buffer, assetNamespace) {
         const normalsBufferView =
           manifest.bufferViews[normalsAccessor.bufferView];
 
+        const positionsChunked = chunkArray(
+          new Float32Array(
+            buffer,
+            positionBufferView.byteOffset,
+            positionBufferView.byteLength / 4
+          ),
+          3
+        );
+
         const attributes: any = {
           position: {
             buffer: regl.buffer(
@@ -240,18 +253,37 @@ export function RenderFactory(manifest, buffer, assetNamespace) {
             offset: positionAccessor.byteOffset,
             stride: positionBufferView.byteStride,
           },
-          normal: {
+          normal: calcNormals(chunkArray(indicesData, 3), positionsChunked),
+          // normal: {
+          //   buffer: regl.buffer(
+          //     new Float32Array(
+          //       buffer,
+          //       positionBufferView.byteOffset,
+          //       positionBufferView.byteLength / 4
+          //     )
+          //   ),
+          //   offset: normalsAccessor.byteOffset,
+          //   stride: normalsBufferView.byteStride,
+          // },
+        };
+
+        if (primitive.attributes.TANGENT !== undefined) {
+          const tangentAccessorIdx = primitive.attributes.TANGENT;
+          const tangentAccessor = manifest.accessors[tangentAccessorIdx];
+          const tangentBufferView =
+            manifest.bufferViews[tangentAccessor.bufferView];
+          attributes["aTangent"] = {
             buffer: regl.buffer(
               new Float32Array(
                 buffer,
-                normalsBufferView.byteOffset,
-                normalsBufferView.byteLength / 4
+                tangentBufferView.byteOffset,
+                tangentBufferView.byteLength / 4
               )
             ),
-            offset: normalsAccessor.byteOffset,
-            stride: normalsBufferView.byteStride,
-          },
-        };
+            offset: tangentAccessor.byteOffset,
+            stride: tangentBufferView.byteStride,
+          };
+        }
 
         // uvs
         if (primitive.attributes.TEXCOORD_0 !== undefined) {
@@ -385,6 +417,9 @@ export function RenderFactory(manifest, buffer, assetNamespace) {
           vertSourceBuilder.setVarying("varying highp vec2 vuv;");
           fragSourceBuilder.setVarying("varying highp vec2 vuv;");
         }
+        if (attributes.aTangent) {
+          vertSourceBuilder.setAttribute("attribute vec4 aTangent;");
+        }
 
         if (attributes.joint) {
           vertSourceBuilder.setAttribute("attribute vec4 joint;");
@@ -470,8 +505,8 @@ export function RenderFactory(manifest, buffer, assetNamespace) {
         }
 
         const FresnelSchlickSrc = `
-          vec3 FresnelSchlick(vec3 F0, float VdotH) {
-            return F0 + (1.0 - F0) * pow(1.0 - VdotH, 5.0);
+          float FresnelSchlick(float VdotH) {
+            return pow(1.0 - VdotH, 5.0);
           }
         `;
 
@@ -482,29 +517,45 @@ export function RenderFactory(manifest, buffer, assetNamespace) {
             float num   = a2;
             float denom = (NdotH2 * (a2 - 1.0) + 1.0);
             denom = pi * denom * denom;
-            return num / denom;
+            return num / max(denom, .00001);
           }
         `;
 
         // assume direct lighting (non image based)
         const GeometricOcclusionSource = `
+
+          float GeometrySchlickGGX(float NdotV, float roughness)
+          {
+              float r = (roughness + 1.0);
+              float k = (r*r) / 8.0;
+          
+              float nom   = NdotV;
+              float denom = NdotV * (1.0 - k) + k;
+          
+              return nom / denom;
+          }
+          // ----------------------------------------------------------------------------
+          float GeometrySmith(vec3 N, vec3 V, vec3 L, float roughness)
+          {
+              float NdotV = max(dot(N, V), 0.0);
+              float NdotL = max(dot(N, L), 0.0);
+              float ggx2 = GeometrySchlickGGX(NdotV, roughness);
+              float ggx1 = GeometrySchlickGGX(NdotL, roughness);
+              return ggx1 * ggx2;
+          }
+
+
           float GeometricOcclusion(float NdotL, float NdotV, float alpha) {
-            float term1 = NdotL * sqrt(NdotV * NdotV * (1.0 - alpha * alpha) + (alpha * alpha));
-            float term2 = NdotV * sqrt(NdotL * NdotL * (1.0 - alpha * alpha) + (alpha * alpha));
-            return .5 / (term1 + term2);
+            float term1 = NdotL * sqrt(abs(NdotV * NdotV * (1.0 - alpha * alpha) + (alpha * alpha)));
+            float term2 = NdotV * sqrt(abs(NdotL * NdotL * (1.0 - alpha * alpha) + (alpha * alpha)));
+            return .5 / max((term1 + term2), .0000001);
           }
         `;
-
-        // const sRGBToLinearSrc = `
-        //   vec4 sRGBToLinear(vec4 value) {
-        //     return vec4( mix( pow( value.rgb * 0.9478672986 + vec3( 0.0521327014 ), vec3( 2.4 ) ), value.rgb * 0.0773993808, vec3( lessThanEqual( value.rgb, vec3( 0.04045 ) ) ) ), value.a );
-        //   }
-        // `;
 
         fragSourceBuilder.setFunction(FresnelSchlickSrc);
         fragSourceBuilder.setFunction(MicrofacetDistributionSource);
         fragSourceBuilder.setFunction(GeometricOcclusionSource);
-        // fragSourceBuilder.setFunction(sRGBToLinearSrc);
+
         fragSourceBuilder.setFunction(`
           const float GAMMA = 2.2;
           const float INV_GAMMA = 1.0 / GAMMA;
@@ -523,6 +574,24 @@ export function RenderFactory(manifest, buffer, assetNamespace) {
         `);
 
         console.log(uniforms);
+        fragSourceBuilder.setFunction(`
+        
+          vec3 getNormal() {
+            ${
+              attributes.aTangent
+                ? `
+                  vec3 N = texture2D(normalTexture, vuv).rgb;
+                  N = v_TBN * normalize(N * 2.0 -1.0);
+                `
+                : `vec3 N = normalize(vNormal);
+                // vec3 N = normalize(cross(dFdx(vWorldPos), dFdy(vWorldPos))); // fall back for broken vertex
+                `
+            }
+
+            return N;
+          }
+        
+        `);
 
         const BRDFSrc = `
           // Metallic:
@@ -535,15 +604,12 @@ export function RenderFactory(manifest, buffer, assetNamespace) {
           ${buildBaseColorSrc(uniforms.baseColorTexture)}
 
           // Normal:
-          
-          vec3 N = normalize(vNormal);
-          // vec3 N = texture2D(normalTexture, vuv).rgb;
-          // N = normalize(N * 2.0 - 1.0); // BROKEN
+          vec3 N = getNormal();
 
           // constants:
-          vec3 ambient = vec3(.05) * baseColor.rgb;
+          vec3 ambient = vec3(.2) * baseColor.rgb;
           vec3 LightDir = vec3(1.0, 0.0, 0.0); // assumed lightDirection
-          vec3 radiance = vec3(1.0); // assumed lightColor
+          vec3 radiance = vec3(5.0); // assumed lightColor
          
           vec3 dialectricSpecular = vec3(.04);
           vec3 black = vec3(0.0);
@@ -562,36 +628,55 @@ export function RenderFactory(manifest, buffer, assetNamespace) {
           float NdotV = clamp(dot(N, V), 0.0, 1.0);
           float NdotH = clamp(dot(N, H), 0.0, 1.0);
 
-          vec3 F = FresnelSchlick(F0, VdotH);
+          // float vis = GeometricOcclusion(NdotL, NdotV, alpha);
+          float G = GeometrySmith(N, V, L, roughness);
           float D = MicrofacetDistribution(NdotH, alpha);
-          float Vis = GeometricOcclusion(NdotL, NdotV, alpha);
+          float F = FresnelSchlick(VdotH);
 
+          float fspecular = F * G * D / max(4.0 * NdotL * NdotV, .0001);
           vec3 diffuse = Cdiff / pi;
           vec3 fdiffuse = (1.0 - F) * diffuse;
-          vec3 fspecular = F * Vis * D;
-
-          // outgoing radiance - sum for each light source
           vec3 Lo = (fdiffuse + fspecular) * radiance * NdotL;
-          vec3 color = ambient + Lo; 
+          
+          vec3 color = ambient + Lo;
           
           // gamma correction
           color = linearTosRGB(color);
 
-          gl_FragColor = vec4(fspecular, 1.0);
+          gl_FragColor = vec4(color, 1.0);
         `;
 
         const localTransform =
           skinIdx !== undefined ? "skinMatrix" : "sceneTransform";
 
+        vertSourceBuilder.setVarying("varying mat3 v_TBN;");
+
         const vert = vertSourceBuilder.build(`
                   ${skinIdx !== undefined ? skinMatrixSrc : ""}
                   ${attributes.uv ? "vuv = uv;" : ""}
-                  vNormal = normal;
-                  vec4 pos = modelTransform * ${localTransform} * vec4(position, 1.0);
+                  vNormal = mat3(modelTransform * ${localTransform}) * normal;
+                  mat4 model = modelTransform * ${localTransform};
+
+
+                  ${
+                    attributes.aTangent
+                      ? `
+                    vec3 T = normalize(vec3(model * aTangent));
+                    vec3 N = normalize(vec3(model * vec4(normal, 0.0)));
+                    vec3 B = normalize(cross(N, T));
+                    v_TBN = mat3(T,B,N);
+                  `
+                      : ``
+                  }
+       
+
+
+                  vec4 pos = model * vec4(position, 1.0);
                   vWorldPos = vec3(pos.xyz) / pos.w; 
                   gl_Position = projection * view * pos;
                   `);
 
+        fragSourceBuilder.setVarying("varying mat3 v_TBN;");
         const frag = fragSourceBuilder.build(BRDFSrc);
 
         return regl({

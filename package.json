@@ -5,7 +5,9 @@
     "build": "parcel build index.html"
   },
   "dependencies": {
+    "angle-normals": "^1.0.0",
     "gl-matrix": "^3.3.0",
+    "normals": "^1.1.0",
     "regl": "^1.6.1",
     "regl-camera": "^2.1.1"
   },

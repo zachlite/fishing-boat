@@ -28,3 +28,15 @@ Spec compliant:
 - baseColorTexture uses sRGB transfer function and must be converted to linear space before being used for computation.
 - If a primitive specifies aa vertex color using COLOR_0, this value acts an additional linear multiplier to baseColor
 - alpha coverage
+
+Known PBR Issues
+
+- Fresnel
+- Normal map, tangent space?
+- Linear vs sRGB
+
+Normal TODO:
+
+- compare learnOpenGL BRDF to glTF spec BRDF
+- Look for tool to recompute vertex normals
+- figure out how to convert tangent space normals to world space normals
