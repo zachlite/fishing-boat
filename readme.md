@@ -37,6 +37,5 @@ Known PBR Issues
 
 Normal TODO:
 
-- compare learnOpenGL BRDF to glTF spec BRDF
-- Look for tool to recompute vertex normals
-- figure out how to convert tangent space normals to world space normals
+- the avocado model had bad normals - i needed to recalculated them
+- Before computing the TBN matrix, the normal needed to brought into world space.

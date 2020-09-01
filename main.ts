@@ -102,7 +102,10 @@ function getAnimations(manifest, buffer): Animation[] {
 }
 
 window.onload = async () => {
+  const canvas = document.getElementById("canvas") as any;
+  const context = canvas.getContext("webgl", { antialias: true });
   const regl = REGL({
+    canvas,
     extensions: [
       "oes_element_index_uint",
       "EXT_sRGB",
@@ -114,9 +117,9 @@ window.onload = async () => {
     // center: [0, 1, 0],
   });
 
-  const assetNamespace = "avocado";
-  const glTFfile = "Avocado";
-  const binFile = "Avocado";
+  const assetNamespace = "fishing_boat";
+  const glTFfile = "scene";
+  const binFile = "scene";
 
   const { manifest, buffer } = await fetchglTF(
     `${assetNamespace}/${glTFfile}.gltf`,
@@ -146,31 +149,30 @@ window.onload = async () => {
   const activeAnimation = 0; // idx;
 
   // assume directional light
-  const LightDirection = [1, 0, 0];
-  const LightColor = [1, 1, 1];
 
   const transform = {
     translation: [0, 0, 0],
     rotation: [0, 0, 0],
-    scale: [1, 1, 1],
+    scale: [0.01, 0.01, 0.01],
   };
 
-  const modelTransform = mat4.fromRotationTranslationScale(
-    mat4.create(),
-    quat.fromEuler(
-      quat.create(),
-      transform.rotation[0],
-      transform.rotation[1],
-      transform.rotation[2]
-    ),
-    transform.translation as any,
-    transform.scale as any
-  );
+  const calcModelTransform = (transform) =>
+    mat4.fromRotationTranslationScale(
+      mat4.create(),
+      quat.fromEuler(
+        quat.create(),
+        transform.rotation[0],
+        transform.rotation[1],
+        transform.rotation[2]
+      ),
+      transform.translation as any,
+      transform.scale as any
+    );
 
   const projection = mat4.create();
   const lookAt = mat4.create();
   const cameraTransform = {
-    eye: [0, 0, 4.00001],
+    eye: [100, 100, 0.00001],
     look: [0, 0, 0],
     up: [0, 1, 0],
   };
@@ -200,37 +202,59 @@ window.onload = async () => {
     },
   });
 
+  const lightContext = regl({
+    context: {
+      lightDirection: (context, props: any) => {
+        return props.lightDirection;
+      },
+    },
+    uniforms: {
+      lightDirection: regl.context("lightDirection" as any),
+    },
+  });
+
+  const lightDirection = [1, -1, 1];
+
   regl.frame((context) => {
     const time = context.time;
+    regl.clear({ color: [0, 0, 0, 1] });
 
     camera((c) => {
-      regl.clear({ color: [0, 0, 0, 1] });
+      lightContext({ lightDirection }, () => {
+        transform.rotation[1] = Math.sin(time);
+        transform.rotation[0] = Math.sin(time);
+        transform.rotation[2] = Math.cos(time);
+        const modelTransform = calcModelTransform(transform);
 
-      if (shouldPlayAnimation) {
-        animations[activeAnimation].channels.forEach((channel) => {
-          manifest.nodes[channel.targetNode][
-            channel.targetPath
-          ] = keyframeValueForTime(
-            channel.keyframes,
-            channel.keyframeValues,
-            time
+        if (shouldPlayAnimation) {
+          animations[activeAnimation].channels.forEach((channel) => {
+            manifest.nodes[channel.targetNode][
+              channel.targetPath
+            ] = keyframeValueForTime(
+              channel.keyframes,
+              channel.keyframeValues,
+              time
+            );
+          });
+        }
+
+        const nodeTransforms = manifest.scenes[0].nodes.reduce(
+          (acc, nodeIdx) => {
+            acc = { ...acc, ...buildNodeTransforms(manifest.nodes, nodeIdx) };
+            return acc;
+          },
+          {}
+        );
+
+        Object.entries(meshRenderers).forEach(([nodeIdx, renderers]) => {
+          renderers.forEach((renderFn) =>
+            renderFn({
+              modelTransform,
+              localTransform: nodeTransforms[nodeIdx],
+              globalJointTransforms: nodeTransforms,
+            })
           );
         });
-      }
-
-      const nodeTransforms = manifest.scenes[0].nodes.reduce((acc, nodeIdx) => {
-        acc = { ...acc, ...buildNodeTransforms(manifest.nodes, nodeIdx) };
-        return acc;
-      }, {});
-
-      Object.entries(meshRenderers).forEach(([nodeIdx, renderers]) => {
-        renderers.forEach((renderFn) =>
-          renderFn({
-            modelTransform,
-            localTransform: nodeTransforms[nodeIdx],
-            globalJointTransforms: nodeTransforms,
-          })
-        );
       });
     });
   });

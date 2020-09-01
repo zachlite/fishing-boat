@@ -4,6 +4,7 @@ import { numComponentsForAccessorType, glEnumLookup } from "./gltf-constants";
 import { mat4 } from "gl-matrix";
 import { chunkArray } from "./utils";
 import { AssetUrl } from "./constants";
+import { buildPBRVert, buildPBRFrag } from "./pbr-shaders";
 const calcNormals = require("angle-normals");
 
 async function loadImage(imgpath): Promise<HTMLImageElement> {
@@ -13,89 +14,6 @@ async function loadImage(imgpath): Promise<HTMLImageElement> {
     image.crossOrigin = "anonymous";
     image.onload = () => resolve(image);
   });
-}
-
-class FragSourceBuilder {
-  private uniforms;
-  private varyings;
-  private fns;
-
-  constructor() {
-    this.uniforms = ``;
-    this.varyings = ``;
-    this.fns = ``;
-  }
-
-  setUniform(uniforms) {
-    this.uniforms += uniforms;
-  }
-
-  setVarying(varyings) {
-    this.varyings += varyings;
-  }
-
-  setFunction(fn) {
-    this.fns += fn;
-  }
-
-  build(mainSource: string) {
-    const precision = `precision mediump float;`;
-    const constants = `float pi = 3.141592653;`;
-
-    const main = `void main () {
-        ${mainSource}
-      }`;
-
-    return `
-      ${precision}
-      #extension GL_OES_standard_derivatives : enable
-      ${this.uniforms}
-      ${this.varyings}
-      ${constants}
-      ${this.fns}
-      ${main}
-    `;
-  }
-}
-
-class VertSourceBuilder {
-  private uniforms;
-  private attributes;
-  private varyings;
-
-  constructor() {
-    this.uniforms = ``;
-    this.attributes = ``;
-    this.varyings = ``;
-  }
-
-  setAttribute(attributes) {
-    this.attributes += attributes;
-  }
-
-  setUniform(uniforms) {
-    this.uniforms += uniforms;
-  }
-
-  setVarying(varyings) {
-    this.varyings += varyings;
-  }
-
-  build(mainSource: string) {
-    const precision = `precision mediump float;`;
-
-    const main = `void main () {
-        ${mainSource}
-      }`;
-
-    return `
-      ${precision}
-      ${this.uniforms}
-      ${this.attributes}
-      ${this.varyings}
-      ${main}
-    `;
-  }
 }
 
 interface Material {
@@ -211,6 +129,71 @@ async function buildMaterialUniforms(
 }
 
 export function RenderFactory(manifest, buffer, assetNamespace) {
+  function buildJointMatrixUniforms(skinIdx) {
+    const skin = manifest.skins[skinIdx];
+    const numJoints = manifest.skins[skinIdx].joints.length;
+    const ibmAccessor = skin.inverseBindMatrices;
+    const inverseBindMatrices = chunkArray(
+      getTypedDataView(buffer, manifest, ibmAccessor),
+      numComponentsForAccessorType["MAT4"]
+    );
+
+    function jointMatrixFn(jointIdx) {
+      return (context, props) => {
+        const jointMatrix = mat4.create();
+        mat4.multiply(
+          jointMatrix,
+          props.globalJointTransforms[skin.joints[jointIdx]],
+          inverseBindMatrices[jointIdx]
+        );
+        return jointMatrix;
+      };
+    }
+
+    let uniforms = {};
+
+    for (let i = 0; i < numJoints; i++) {
+      uniforms[`jointMatrix[${i}]`] = jointMatrixFn(i);
+    }
+
+    return uniforms;
+  }
+
+  function buildJointAttributes(regl, primitive) {
+    const jointAccessorIdx = primitive.attributes.JOINTS_0;
+    const jointAccessor = manifest.accessors[jointAccessorIdx];
+    const jointBufferView = manifest.bufferViews[jointAccessor.bufferView];
+
+    const weightAccessorIdx = primitive.attributes.WEIGHTS_0;
+    const weightAccessor = manifest.accessors[weightAccessorIdx];
+    const weightBufferView = manifest.bufferViews[weightAccessor.bufferView];
+
+    return {
+      joint: {
+        buffer: regl.buffer(
+          new Uint16Array(
+            buffer,
+            jointBufferView.byteOffset,
+            jointBufferView.byteLength / 2
+          )
+        ),
+        offset: jointAccessor.byteOffset,
+        stride: jointBufferView.byteStride || 0,
+      },
+      weight: {
+        buffer: regl.buffer(
+          new Float32Array(
+            buffer,
+            weightBufferView.byteOffset,
+            weightBufferView.byteLength / 4
+          )
+        ),
+        offset: weightAccessor.byteOffset,
+        stride: weightBufferView.byteStride || 0,
+      },
+    };
+  }
+
   function buildMeshRenderFn(regl, meshIdx, skinIdx) {
     const mesh = manifest.meshes[meshIdx];
     const fns: Promise<REGL.DrawCommand>[] = mesh.primitives.map(
@@ -241,7 +224,7 @@ export function RenderFactory(manifest, buffer, assetNamespace) {
           3
         );
 
-        const attributes: any = {
+        let attributes: any = {
           position: {
             buffer: regl.buffer(
               new Float32Array(
@@ -306,9 +289,7 @@ export function RenderFactory(manifest, buffer, assetNamespace) {
         /// material
         const materialIdx = primitive.material;
         const material = manifest.materials[materialIdx];
-        // TODO: handle default material
 
-        // assume pbrmetallicroughness:
         let uniforms: {
           sceneTransform: any;
           modelTransform: any;
@@ -318,64 +299,13 @@ export function RenderFactory(manifest, buffer, assetNamespace) {
         };
 
         if (skinIdx !== undefined) {
-          // get inverseBindMatrices
-          // get joints and weights
-          const skin = manifest.skins[skinIdx];
-          const numJoints = manifest.skins[skinIdx].joints.length;
-          const ibmAccessor = skin.inverseBindMatrices;
-          const inverseBindMatrices = chunkArray(
-            getTypedDataView(buffer, manifest, ibmAccessor),
-            numComponentsForAccessorType["MAT4"]
-          );
+          // build joint matrix
+          uniforms = { ...uniforms, ...buildJointMatrixUniforms(skinIdx) };
 
-          function jointMatrixFn(jointIdx) {
-            return (context, props) => {
-              const jointMatrix = mat4.create();
-              mat4.multiply(
-                jointMatrix,
-                props.globalJointTransforms[skin.joints[jointIdx]],
-                inverseBindMatrices[jointIdx]
-              );
-              return jointMatrix;
-            };
-          }
-
-          for (let i = 0; i < numJoints; i++) {
-            uniforms[`jointMatrix[${i}]`] = jointMatrixFn(i);
-          }
-
-          const jointAccessorIdx = primitive.attributes.JOINTS_0;
-          const jointAccessor = manifest.accessors[jointAccessorIdx];
-          const jointBufferView =
-            manifest.bufferViews[jointAccessor.bufferView];
-
-          attributes["joint"] = {
-            buffer: regl.buffer(
-              new Uint16Array(
-                buffer,
-                jointBufferView.byteOffset,
-                jointBufferView.byteLength / 2
-              )
-            ),
-            offset: jointAccessor.byteOffset,
-            stride: jointBufferView.byteStride || 0,
-          };
-
-          const weightAccessorIdx = primitive.attributes.WEIGHTS_0;
-          const weightAccessor = manifest.accessors[weightAccessorIdx];
-          const weightBufferView =
-            manifest.bufferViews[weightAccessor.bufferView];
-
-          attributes["weight"] = {
-            buffer: regl.buffer(
-              new Float32Array(
-                buffer,
-                weightBufferView.byteOffset,
-                weightBufferView.byteLength / 4
-              )
-            ),
-            offset: weightAccessor.byteOffset,
-            stride: weightBufferView.byteStride || 0,
+          // set joint and weight attributes
+          attributes = {
+            ...attributes,
+            ...buildJointAttributes(regl, primitive),
           };
         }
 
@@ -389,299 +319,13 @@ export function RenderFactory(manifest, buffer, assetNamespace) {
           )),
         };
 
-        // build uniforms based on material properties
-
-        // build shader support for pbrMetallicRougnhness material
-        // lights?
-
-        const vertSourceBuilder = new VertSourceBuilder();
-        const fragSourceBuilder = new FragSourceBuilder();
-
-        vertSourceBuilder.setUniform(
-          "uniform mat4 projection, view, modelTransform;"
-        );
-        vertSourceBuilder.setVarying("varying vec3 vWorldPos;");
-        fragSourceBuilder.setVarying("varying vec3 vWorldPos;");
-        fragSourceBuilder.setUniform("uniform vec3 eye;");
-
-        if (attributes.position) {
-          vertSourceBuilder.setAttribute("attribute vec3 position;");
-        }
-        if (attributes.normal) {
-          vertSourceBuilder.setAttribute("attribute vec3 normal;");
-          vertSourceBuilder.setVarying("varying vec3 vNormal;");
-          fragSourceBuilder.setVarying("varying vec3 vNormal;");
-        }
-        if (attributes.uv) {
-          vertSourceBuilder.setAttribute("attribute vec2 uv;");
-          vertSourceBuilder.setVarying("varying highp vec2 vuv;");
-          fragSourceBuilder.setVarying("varying highp vec2 vuv;");
-        }
-        if (attributes.aTangent) {
-          vertSourceBuilder.setAttribute("attribute vec4 aTangent;");
-        }
-
-        if (attributes.joint) {
-          vertSourceBuilder.setAttribute("attribute vec4 joint;");
-        }
-
-        if (attributes.weight) {
-          vertSourceBuilder.setAttribute("attribute vec4 weight;");
-        }
-
-        if (uniforms.sceneTransform !== undefined) {
-          vertSourceBuilder.setUniform("uniform mat4 sceneTransform;");
-        }
-
-        // PBR material data
-        fragSourceBuilder.setUniform("uniform vec4 baseColorFactor;");
-        fragSourceBuilder.setUniform("uniform float metallicFactor;");
-        fragSourceBuilder.setUniform("uniform float roughnessFactor;");
-        fragSourceBuilder.setUniform("uniform vec3 emissiveFactor;");
-
-        if (uniforms.baseColorTexture !== undefined) {
-          fragSourceBuilder.setUniform("uniform sampler2D baseColorTexture;");
-        }
-        if (uniforms.metallicRoughnessTexture !== undefined) {
-          fragSourceBuilder.setUniform(
-            "uniform sampler2D metallicRoughnessTexture;"
-          );
-        }
-        if (uniforms.normalTexture !== undefined) {
-          fragSourceBuilder.setUniform("uniform sampler2D normalTexture;");
-        }
-        if (uniforms.occlusionTexture !== undefined) {
-          fragSourceBuilder.setUniform("uniform sampler2D occlusionTexture;");
-        }
-        if (uniforms.emissiveTexture !== undefined) {
-          fragSourceBuilder.setUniform("uniform sampler2D emissiveTexture;");
-        }
-
-        if (skinIdx !== undefined) {
-          const numJoints = manifest.skins[skinIdx].joints.length;
-          vertSourceBuilder.setUniform(
-            `uniform mat4 jointMatrix[${numJoints}];`
-          );
-        }
-
-        const skinMatrixSrc = `
-          mat4 skinMatrix = weight.x * jointMatrix[int(joint.x)] +
-                            weight.y * jointMatrix[int(joint.y)] +
-                            weight.z * jointMatrix[int(joint.z)] +
-                            weight.w * jointMatrix[int(joint.w)];
-        `;
-
-        // SUPPORT:
-        // EmissiveMap
-        // OcclusionMap
-        // NormalMap
-
-        function buildNormalSrc(texture) {
-          return texture
-            ? `vec3 N = texture2D(normalTexture, vuv).rgb;
-               N = normalize(N * 2.0 - 1.0);
-              `
-            : `vec3 N = normalize(vNormal);`;
-        }
-
-        function buildMetallicSrc(texture) {
-          return texture
-            ? `float metallic = texture2D(metallicRoughnessTexture, vuv).b * metallicFactor;`
-            : `float metallic = metallicFactor;`;
-        }
-
-        function buildRougnessSrc(texture) {
-          return texture
-            ? `float roughness = texture2D(metallicRoughnessTexture, vuv).g * roughnessFactor;`
-            : `float roughness = roughnessFactor;`;
-        }
-
-        function buildBaseColorSrc(texture) {
-          return texture
-            ? `vec4 baseColor = baseColorFactor;
-              baseColor *= sRGBToLinear(texture2D(baseColorTexture, vuv));
-              `
-            : `vec4 baseColor = baseColorFactor;`;
-        }
-
-        const FresnelSchlickSrc = `
-          float FresnelSchlick(float VdotH) {
-            return pow(1.0 - VdotH, 5.0);
-          }
-        `;
-
-        const MicrofacetDistributionSource = `
-          float MicrofacetDistribution(float NdotH, float a) {
-            float a2     = a*a;
-            float NdotH2 = NdotH*NdotH;
-            float num   = a2;
-            float denom = (NdotH2 * (a2 - 1.0) + 1.0);
-            denom = pi * denom * denom;
-            return num / max(denom, .00001);
-          }
-        `;
-
-        // assume direct lighting (non image based)
-        const GeometricOcclusionSource = `
-
-          float GeometrySchlickGGX(float NdotV, float roughness)
-          {
-              float r = (roughness + 1.0);
-              float k = (r*r) / 8.0;
-          
-              float nom   = NdotV;
-              float denom = NdotV * (1.0 - k) + k;
-          
-              return nom / denom;
-          }
-          // ----------------------------------------------------------------------------
-          float GeometrySmith(vec3 N, vec3 V, vec3 L, float roughness)
-          {
-              float NdotV = max(dot(N, V), 0.0);
-              float NdotL = max(dot(N, L), 0.0);
-              float ggx2 = GeometrySchlickGGX(NdotV, roughness);
-              float ggx1 = GeometrySchlickGGX(NdotL, roughness);
-              return ggx1 * ggx2;
-          }
-
-
-          float GeometricOcclusion(float NdotL, float NdotV, float alpha) {
-            float term1 = NdotL * sqrt(abs(NdotV * NdotV * (1.0 - alpha * alpha) + (alpha * alpha)));
-            float term2 = NdotV * sqrt(abs(NdotL * NdotL * (1.0 - alpha * alpha) + (alpha * alpha)));
-            return .5 / max((term1 + term2), .0000001);
-          }
-        `;
-
-        fragSourceBuilder.setFunction(FresnelSchlickSrc);
-        fragSourceBuilder.setFunction(MicrofacetDistributionSource);
-        fragSourceBuilder.setFunction(GeometricOcclusionSource);
-
-        fragSourceBuilder.setFunction(`
-          const float GAMMA = 2.2;
-          const float INV_GAMMA = 1.0 / GAMMA;
-
-          vec3 linearTosRGB(vec3 color) {
-            return pow(color, vec3(INV_GAMMA));
-          }
-          
-          vec3 sRGBToLinear(vec3 srgbIn) {
-            return vec3(pow(srgbIn.xyz, vec3(GAMMA)));
-          }
-
-          vec4 sRGBToLinear(vec4 srgbIn) {
-            return vec4(sRGBToLinear(srgbIn.xyz), srgbIn.w);
-          }
-        `);
-
-        console.log(uniforms);
-        fragSourceBuilder.setFunction(`
-        
-          vec3 getNormal() {
-            ${
-              attributes.aTangent
-                ? `
-                  vec3 N = texture2D(normalTexture, vuv).rgb;
-                  N = v_TBN * normalize(N * 2.0 -1.0);
-                `
-                : `vec3 N = normalize(vNormal);
-                // vec3 N = normalize(cross(dFdx(vWorldPos), dFdy(vWorldPos))); // fall back for broken vertex
-                `
-            }
-
-            return N;
-          }
-        
-        `);
-
-        const BRDFSrc = `
-          // Metallic:
-          ${buildMetallicSrc(uniforms.metallicRoughnessTexture)}
-
-          // Roughness:
-          ${buildRougnessSrc(uniforms.metallicRoughnessTexture)}
-
-          // Base Color:
-          ${buildBaseColorSrc(uniforms.baseColorTexture)}
-
-          // Normal:
-          vec3 N = getNormal();
-
-          // constants:
-          vec3 ambient = vec3(.2) * baseColor.rgb;
-          vec3 LightDir = vec3(1.0, 0.0, 0.0); // assumed lightDirection
-          vec3 radiance = vec3(5.0); // assumed lightColor
-         
-          vec3 dialectricSpecular = vec3(.04);
-          vec3 black = vec3(0.0);
-
-          vec3 Cdiff = mix(baseColor.rgb * (1.0 - dialectricSpecular.r), black, metallic);
-          vec3 F0 = mix(dialectricSpecular, baseColor.rgb, metallic);
-          float alpha = roughness * roughness;
-        
-
-          vec3 V = normalize(eye - vWorldPos);
-          vec3 L = normalize(-LightDir);
-          vec3 H = normalize(L + V);
-
-          float VdotH = clamp(dot(V, H), 0.0, 1.0);
-          float NdotL = clamp(dot(N, L), 0.0, 1.0);
-          float NdotV = clamp(dot(N, V), 0.0, 1.0);
-          float NdotH = clamp(dot(N, H), 0.0, 1.0);
-
-          // float vis = GeometricOcclusion(NdotL, NdotV, alpha);
-          float G = GeometrySmith(N, V, L, roughness);
-          float D = MicrofacetDistribution(NdotH, alpha);
-          float F = FresnelSchlick(VdotH);
-
-          float fspecular = F * G * D / max(4.0 * NdotL * NdotV, .0001);
-          vec3 diffuse = Cdiff / pi;
-          vec3 fdiffuse = (1.0 - F) * diffuse;
-          vec3 Lo = (fdiffuse + fspecular) * radiance * NdotL;
-          
-          vec3 color = ambient + Lo;
-          
-          // gamma correction
-          color = linearTosRGB(color);
-
-          gl_FragColor = vec4(color, 1.0);
-        `;
-
-        const localTransform =
-          skinIdx !== undefined ? "skinMatrix" : "sceneTransform";
-
-        vertSourceBuilder.setVarying("varying mat3 v_TBN;");
-
-        const vert = vertSourceBuilder.build(`
-                  ${skinIdx !== undefined ? skinMatrixSrc : ""}
-                  ${attributes.uv ? "vuv = uv;" : ""}
-                  vNormal = mat3(modelTransform * ${localTransform}) * normal;
-                  mat4 model = modelTransform * ${localTransform};
-
-
-                  ${
-                    attributes.aTangent
-                      ? `
-                    vec3 T = normalize(vec3(model * aTangent));
-                    vec3 N = normalize(vec3(model * vec4(normal, 0.0)));
-                    vec3 B = normalize(cross(N, T));
-                    v_TBN = mat3(T,B,N);
-                  `
-                      : ``
-                  }
-       
-
-
-                  vec4 pos = model * vec4(position, 1.0);
-                  vWorldPos = vec3(pos.xyz) / pos.w; 
-                  gl_Position = projection * view * pos;
-                  `);
-
-        fragSourceBuilder.setVarying("varying mat3 v_TBN;");
-        const frag = fragSourceBuilder.build(BRDFSrc);
-
         return regl({
-          vert,
-          frag,
+          vert: buildPBRVert(
+            attributes,
+            uniforms,
+            skinIdx === undefined ? 0 : manifest.skins[skinIdx].joints.length
+          ),
+          frag: buildPBRFrag(attributes, uniforms),
           attributes,
           uniforms,
           elements: indicesData,
