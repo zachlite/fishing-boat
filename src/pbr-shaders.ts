@@ -50,7 +50,6 @@ export function buildPBRVert(attributes, uniforms, numJoints = 0) {
 }
 
 export function buildPBRFrag(attributes, uniforms) {
-  console.log(uniforms);
   // prettier-ignore
   const source = `
 

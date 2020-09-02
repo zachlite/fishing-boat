@@ -39,3 +39,8 @@ Normal TODO:
 
 - the avocado model had bad normals - i needed to recalculated them
 - Before computing the TBN matrix, the normal needed to brought into world space.
+
+Boat Diorama:
+
+- water, waves, reflections
+- point lights
