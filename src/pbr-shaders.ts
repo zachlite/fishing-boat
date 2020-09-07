@@ -19,6 +19,9 @@ export function buildPBRVert(attributes, uniforms, numJoints = 0) {
     varying mat3 v_TBN;
     ${attributes.uv ? `varying vec2 vuv;` : ``}
 
+    uniform mat4 depthProjection, depthView;
+    varying vec3 vPosDepthSpace; //TODO: will need w component when dealing with point light shadows.
+
     void main() {
       ${numJoints > 0 ? `
       mat4 skinMatrix = weight.x * jointMatrix[int(joint.x)] +
@@ -42,6 +45,7 @@ export function buildPBRVert(attributes, uniforms, numJoints = 0) {
       vNormal = mat3(model) * normal;
       vec4 pos = model * vec4(position, 1.0);
       vWorldPos = vec3(pos.xyz) / pos.w;
+      vPosDepthSpace = (depthProjection * depthView * pos).xyz;
       gl_Position = projection * view * pos;
     }
   `;
@@ -79,6 +83,8 @@ export function buildPBRFrag(attributes, uniforms) {
     ${uniforms.occlusionTexture? `uniform sampler2D occlusionTexture;` : ``}
     ${uniforms.emissiveTexture? `uniform sampler2D emissiveTexture;` : ``}
 
+    ${uniforms.depthSampler ? `uniform sampler2D depthSampler;` : ``}
+    varying vec3 vPosDepthSpace; //TODO: will need w component when dealing with point light shadows.
 
     float FresnelSchlick(float VdotH) {
       return pow(1.0 - VdotH, 5.0);
@@ -159,12 +165,20 @@ export function buildPBRFrag(attributes, uniforms) {
       return baseColor;
     }
 
+    float inShadow(vec3 fragPosDepthSpace, vec3 normal, vec3 lightDir) {
+      vec3 sampleCoords = fragPosDepthSpace * 0.5 + 0.5;
+      float closest = texture2D(depthSampler, sampleCoords.xy).z;
+      float current = fragPosDepthSpace.z;
+      float bias = max(0.05 * (1.0 - dot(normal, lightDir)), 0.005);  
+      return closest < current - bias ? 0.0 : 1.0;
+    }
+
     void main() {
       vec4 baseColor = getBaseColor();
       float metallic = getMetallic();
       float roughness = getRoughness();
 
-      vec3 ambient = vec3(.1) * baseColor.rgb;
+      vec3 ambient = vec3(.05) * baseColor.rgb;
       vec3 radiance = vec3(5.0); // assumed lightColor
       
       vec3 dialectricSpecular = vec3(.04);
@@ -193,7 +207,14 @@ export function buildPBRFrag(attributes, uniforms) {
       vec3 fdiffuse = (1.0 - F) * diffuse;
       vec3 Lo = (fdiffuse + fspecular) * radiance * NdotL;
       
-      vec3 color = ambient + Lo;
+      
+      
+      // if depth map is present:
+      // convert this fragment to depth space (do in vertex shader)
+      // vFragDepthSpace 
+      // 
+      float shadow = inShadow(vPosDepthSpace, N, L);
+      vec3 color = ambient + (shadow * Lo);
 
       // gamma correction
       color = linearTosRGB(color);

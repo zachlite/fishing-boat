@@ -1,8 +1,17 @@
-import { mat4, quat, glMatrix } from "gl-matrix";
+import { mat4, quat, glMatrix, vec3 } from "gl-matrix";
 import REGL = require("regl");
 import { keyframeValueForTime } from "./src/animation";
 import { AssetUrl } from "./src/constants";
-import { createRenderable } from "./src/renderable";
+import {
+  loadMeshPrimitives,
+  buildRenderer,
+  buildNodeTransforms,
+} from "./src/renderable";
+import { buildPBRVert, buildPBRFrag } from "./src/pbr-shaders";
+import {
+  buildDepthBufferVert,
+  buildDepthBufferFrag,
+} from "./src/depth-buffer-shaders";
 
 async function fetchglTF(manifestPath, binPath) {
   const manifest = await fetch(`${AssetUrl}/${manifestPath}`).then((response) =>
@@ -19,10 +28,9 @@ async function fetchglTF(manifestPath, binPath) {
 // a bufferView is interleaved if bytesForComponentType * numComponents > bufferView.byteStride
 
 window.onload = async () => {
-  const canvas = document.getElementById("canvas") as any;
-  const context = canvas.getContext("webgl", { antialias: true });
+  // const canvas = document.getElementById("canvas") as any;
+  // const context = canvas.getContext("webgl", { antialias: true });
   const regl = REGL({
-    canvas,
     extensions: [
       "oes_element_index_uint",
       "EXT_sRGB",
@@ -110,30 +118,102 @@ window.onload = async () => {
     },
   });
 
-  const lightDirection = [1, -1, 1];
+  const lightDirection = [1, -1, 0];
+  const depthCameraEye = vec3.scale([], lightDirection, -4);
+  depthCameraEye[2] += 0.00001;
 
-  const modelRenderer = await createRenderable(
+  // 'createRenderable' is too high level
+  // I need to be able to render to different targets, and the gltf loader shouldn't assume what target I'm rendering to.
+  const boatPrimitives = await loadMeshPrimitives(
     regl,
     manifest,
     buffer,
     assetNamespace
   );
 
+  const nodeTransforms = manifest.scenes[0].nodes.reduce((acc, nodeIdx) => {
+    acc = { ...acc, ...buildNodeTransforms(manifest.nodes, nodeIdx) };
+    return acc;
+  }, {});
+
+  const res = 8192;
+  const depthBuffer = regl.framebuffer({
+    width: res,
+    height: res,
+    depth: true,
+  });
+
+  const depthBufferRenderer = buildRenderer(
+    regl,
+    boatPrimitives,
+    {
+      vertBuilder: buildDepthBufferVert,
+      fragBuilder: buildDepthBufferFrag,
+    },
+    depthBuffer
+  );
+
+  const pbrRenderer = buildRenderer(
+    regl,
+    boatPrimitives,
+    {
+      vertBuilder: buildPBRVert,
+      fragBuilder: buildPBRFrag,
+    },
+    null,
+    { depthSampler: (context, props) => props.depthSampler }
+  );
+
+  const depthDim = 10;
+  const depthProjection = mat4.ortho(
+    mat4.create(),
+    -depthDim,
+    depthDim,
+    -depthDim,
+    depthDim,
+    -depthDim,
+    depthDim
+  );
+
+  const depthView = mat4.lookAt(
+    mat4.create(),
+    depthCameraEye,
+    [0, 0, 0],
+    [0, 1, 0]
+  );
+
+  const depthBufferContext = regl({
+    context: {
+      depthProjection: (context, props: any) => props.depthProjection,
+      depthView: (context, props) => props.depthView,
+    },
+    uniforms: {
+      depthProjection: regl.context("depthProjection" as any),
+      depthView: regl.context("depthView" as any),
+    },
+  });
+
   regl.frame((context) => {
     const time = context.time;
-    regl.clear({ color: [0, 0, 0, 1] });
+    regl.clear({ color: [0, 0, 0, 1], depth: 1 });
+    regl.clear({
+      color: [0, 0, 0, 1],
+      depth: 1,
+      framebuffer: depthBuffer,
+    });
 
     camera((c) => {
       lightContext({ lightDirection }, () => {
-        transform.rotation[1] = Math.sin(time);
+        transform.rotation[1] += 0.1;
         transform.rotation[0] = Math.sin(time);
         transform.rotation[2] = Math.cos(time);
         const modelTransform = calcModelTransform(transform);
 
-        modelRenderer({
-          modelTransform,
-          // animationName: "Wheels",
-          // animationTime: time,
+        depthBufferContext({ depthProjection, depthView }, () => {
+          depthBufferRenderer(modelTransform, nodeTransforms);
+          pbrRenderer(modelTransform, nodeTransforms, {
+            depthSampler: depthBuffer,
+          });
         });
       });
     });

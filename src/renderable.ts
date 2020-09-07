@@ -3,16 +3,7 @@ import { RenderFactory } from "./render-factory";
 import { getTypedDataView } from "./gltf-utils";
 import { chunkArray } from "./utils";
 import { numComponentsForAccessorType } from "./gltf-constants";
-import REGL from "regl";
-import { keyframeValueForTime } from "./animation";
-
-type RenderArgs = {
-  animationName?: string;
-  animationTime?: number;
-  modelTransform: mat4;
-};
-
-type Renderable = (args: RenderArgs) => void;
+import REGL = require("regl");
 
 interface Animation {
   name: string;
@@ -39,7 +30,7 @@ function buildLocalTransform(node) {
   );
 }
 
-function buildNodeTransforms(
+export function buildNodeTransforms(
   nodes,
   nodeIdx,
   parentTransform = mat4.create()
@@ -93,59 +84,89 @@ function getAnimations(manifest, buffer): Animation[] {
     return { name, channels };
   });
 }
+type MeshPrimitivesRecord = Record<
+  NodeIdx,
+  { uniforms: any; attributes: any; elements: any }[]
+>;
 
-export async function createRenderable(
+export async function loadMeshPrimitives(
   regl,
   manifest,
   buffer,
   assetNamespace
-): Promise<Renderable> {
-  const buildMeshRenderer = RenderFactory(manifest, buffer, assetNamespace);
+): Promise<MeshPrimitivesRecord> {
+  // TODO: this renderFactory / render naming convention no longer applies...
+  const buildRenderFn = RenderFactory(manifest, buffer, assetNamespace);
 
-  type MeshRendererRecord = Record<NodeIdx, REGL.DrawCommand[]>;
   // TODO: make this sync.  fetch textures, and pass to renderFactory.
-  const meshRenderers: MeshRendererRecord = await manifest.nodes.reduce(
+  const meshPrimitives = await manifest.nodes.reduce(
     async (acc, node, nodeIdx) => {
       if (node.mesh === undefined) return acc;
-      const renderersForMesh = await Promise.all(
-        buildMeshRenderer(regl, node.mesh, node.skin)
+      const renderers = await Promise.all(
+        buildRenderFn(regl, node.mesh, node.skin)
       );
-      (await acc)[nodeIdx] = renderersForMesh;
+      (await acc)[nodeIdx] = renderers;
       return acc;
     },
     {}
   );
 
-  const animations = getAnimations(manifest, buffer);
+  return meshPrimitives;
+
+  // const animations = getAnimations(manifest, buffer);
   // const shouldPlayAnimation = animations.length !== 0;
   // const activeAnimation = 0; // idx;
+  // if (args.animationName !== undefined) {
+  //   const animation = animations.find((a) => a.name === args.animationName);
+  //   if (!animation) throw new Error("animation not found");
+  //   animation.channels.forEach((channel) => {
+  //     manifest.nodes[channel.targetNode][
+  //       channel.targetPath
+  //     ] = keyframeValueForTime(
+  //       channel.keyframes,
+  //       channel.keyframeValues,
+  //       args.animationTime || 0
+  //     );
+  //   });
+  // }
+}
 
-  return (args: RenderArgs) => {
-    if (args.animationName !== undefined) {
-      const animation = animations.find((a) => a.name === args.animationName);
-      if (!animation) throw new Error("animation not found");
-      animation.channels.forEach((channel) => {
-        manifest.nodes[channel.targetNode][
-          channel.targetPath
-        ] = keyframeValueForTime(
-          channel.keyframes,
-          channel.keyframeValues,
-          args.animationTime || 0
-        );
+export function buildRenderer(
+  regl,
+  meshes: MeshPrimitivesRecord,
+  shaders,
+  framebuffer = null,
+  customUniforms = {}
+) {
+  // collect renderers per node
+  const renderFns: Record<NodeIdx, REGL.DrawCommand[]> = Object.keys(
+    meshes
+  ).reduce((acc, nodeId) => {
+    acc[nodeId] = meshes[nodeId].flatMap((primitive) => {
+      const { attributes, elements } = primitive;
+      const uniforms = { ...primitive.uniforms, ...customUniforms };
+      return regl({
+        vert: shaders.vertBuilder(attributes, uniforms, 0), // TODO: figure out num joints.
+        frag: shaders.fragBuilder(attributes, uniforms),
+        attributes,
+        uniforms,
+        elements,
+        framebuffer,
       });
-    }
+    });
 
-    const nodeTransforms = manifest.scenes[0].nodes.reduce((acc, nodeIdx) => {
-      acc = { ...acc, ...buildNodeTransforms(manifest.nodes, nodeIdx) };
-      return acc;
-    }, {});
+    return acc;
+  }, {});
 
-    Object.entries(meshRenderers).forEach(([nodeIdx, renderers]) => {
+  // return a function that invokes them
+  return (modelTransform, nodeTransforms, uniforms = {}) => {
+    Object.entries(renderFns).forEach(([nodeIdx, renderers]) => {
       renderers.forEach((renderFn) =>
         renderFn({
-          modelTransform: args.modelTransform,
+          modelTransform,
           localTransform: nodeTransforms[nodeIdx],
           globalJointTransforms: nodeTransforms,
+          ...uniforms,
         })
       );
     });

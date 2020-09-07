@@ -194,146 +194,138 @@ export function RenderFactory(manifest, buffer, assetNamespace) {
     };
   }
 
-  function buildMeshRenderFn(regl, meshIdx, skinIdx) {
+  function buildRenderFn(regl, meshIdx, skinIdx) {
     const mesh = manifest.meshes[meshIdx];
-    const fns: Promise<REGL.DrawCommand>[] = mesh.primitives.map(
-      async (primitive) => {
-        const normalAccessorIdx = primitive.attributes.NORMAL;
-        const positionAccessorIdx = primitive.attributes.POSITION;
-        const indicesAccessorIdx = primitive.indices;
-        const indicesData = getTypedDataView(
+    const fns = mesh.primitives.map(async (primitive) => {
+      const normalAccessorIdx = primitive.attributes.NORMAL;
+      const positionAccessorIdx = primitive.attributes.POSITION;
+      const indicesAccessorIdx = primitive.indices;
+      const indicesData = getTypedDataView(
+        buffer,
+        manifest,
+        indicesAccessorIdx
+      );
+
+      const positionAccessor = manifest.accessors[positionAccessorIdx];
+      const positionBufferView =
+        manifest.bufferViews[positionAccessor.bufferView];
+
+      const normalsAccessor = manifest.accessors[normalAccessorIdx];
+      const normalsBufferView =
+        manifest.bufferViews[normalsAccessor.bufferView];
+
+      const positionsChunked = chunkArray(
+        new Float32Array(
           buffer,
-          manifest,
-          indicesAccessorIdx
-        );
+          positionBufferView.byteOffset,
+          positionBufferView.byteLength / 4
+        ),
+        3
+      );
 
-        const positionAccessor = manifest.accessors[positionAccessorIdx];
-        const positionBufferView =
-          manifest.bufferViews[positionAccessor.bufferView];
-
-        const normalsAccessor = manifest.accessors[normalAccessorIdx];
-        const normalsBufferView =
-          manifest.bufferViews[normalsAccessor.bufferView];
-
-        const positionsChunked = chunkArray(
-          new Float32Array(
-            buffer,
-            positionBufferView.byteOffset,
-            positionBufferView.byteLength / 4
+      let attributes: any = {
+        position: {
+          buffer: regl.buffer(
+            new Float32Array(
+              buffer,
+              positionBufferView.byteOffset,
+              positionBufferView.byteLength / 4
+            )
           ),
-          3
-        );
+          offset: positionAccessor.byteOffset,
+          stride: positionBufferView.byteStride,
+        },
+        normal: calcNormals(chunkArray(indicesData, 3), positionsChunked),
+        // normal: {
+        //   buffer: regl.buffer(
+        //     new Float32Array(
+        //       buffer,
+        //       positionBufferView.byteOffset,
+        //       positionBufferView.byteLength / 4
+        //     )
+        //   ),
+        //   offset: normalsAccessor.byteOffset,
+        //   stride: normalsBufferView.byteStride,
+        // },
+      };
 
-        let attributes: any = {
-          position: {
-            buffer: regl.buffer(
-              new Float32Array(
-                buffer,
-                positionBufferView.byteOffset,
-                positionBufferView.byteLength / 4
-              )
-            ),
-            offset: positionAccessor.byteOffset,
-            stride: positionBufferView.byteStride,
-          },
-          normal: calcNormals(chunkArray(indicesData, 3), positionsChunked),
-          // normal: {
-          //   buffer: regl.buffer(
-          //     new Float32Array(
-          //       buffer,
-          //       positionBufferView.byteOffset,
-          //       positionBufferView.byteLength / 4
-          //     )
-          //   ),
-          //   offset: normalsAccessor.byteOffset,
-          //   stride: normalsBufferView.byteStride,
-          // },
-        };
-
-        if (primitive.attributes.TANGENT !== undefined) {
-          const tangentAccessorIdx = primitive.attributes.TANGENT;
-          const tangentAccessor = manifest.accessors[tangentAccessorIdx];
-          const tangentBufferView =
-            manifest.bufferViews[tangentAccessor.bufferView];
-          attributes["aTangent"] = {
-            buffer: regl.buffer(
-              new Float32Array(
-                buffer,
-                tangentBufferView.byteOffset,
-                tangentBufferView.byteLength / 4
-              )
-            ),
-            offset: tangentAccessor.byteOffset,
-            stride: tangentBufferView.byteStride,
-          };
-        }
-
-        // uvs
-        if (primitive.attributes.TEXCOORD_0 !== undefined) {
-          const uvAccessorIdx = primitive.attributes.TEXCOORD_0;
-          const uvAccessor = manifest.accessors[uvAccessorIdx];
-          const uvBufferView = manifest.bufferViews[uvAccessor.bufferView];
-          attributes["uv"] = {
-            buffer: regl.buffer(
-              new Float32Array(
-                buffer,
-                uvBufferView.byteOffset,
-                uvBufferView.byteLength / 4
-              )
-            ),
-            offset: uvAccessor.byteOffset,
-            stride: uvBufferView.byteStride,
-          };
-        }
-
-        /// material
-        const materialIdx = primitive.material;
-        const material = manifest.materials[materialIdx];
-
-        let uniforms: {
-          sceneTransform: any;
-          modelTransform: any;
-        } & MaterialUniforms = {
-          sceneTransform: (context, props) => props.localTransform,
-          modelTransform: (context, props) => props.modelTransform,
-        };
-
-        if (skinIdx !== undefined) {
-          // build joint matrix
-          uniforms = { ...uniforms, ...buildJointMatrixUniforms(skinIdx) };
-
-          // set joint and weight attributes
-          attributes = {
-            ...attributes,
-            ...buildJointAttributes(regl, primitive),
-          };
-        }
-
-        uniforms = {
-          ...uniforms,
-          ...(await buildMaterialUniforms(
-            manifest,
-            material,
-            regl,
-            assetNamespace
-          )),
-        };
-
-        return regl({
-          vert: buildPBRVert(
-            attributes,
-            uniforms,
-            skinIdx === undefined ? 0 : manifest.skins[skinIdx].joints.length
+      if (primitive.attributes.TANGENT !== undefined) {
+        const tangentAccessorIdx = primitive.attributes.TANGENT;
+        const tangentAccessor = manifest.accessors[tangentAccessorIdx];
+        const tangentBufferView =
+          manifest.bufferViews[tangentAccessor.bufferView];
+        attributes["aTangent"] = {
+          buffer: regl.buffer(
+            new Float32Array(
+              buffer,
+              tangentBufferView.byteOffset,
+              tangentBufferView.byteLength / 4
+            )
           ),
-          frag: buildPBRFrag(attributes, uniforms),
-          attributes,
-          uniforms,
-          elements: indicesData,
-        });
+          offset: tangentAccessor.byteOffset,
+          stride: tangentBufferView.byteStride,
+        };
       }
-    );
+
+      // uvs
+      if (primitive.attributes.TEXCOORD_0 !== undefined) {
+        const uvAccessorIdx = primitive.attributes.TEXCOORD_0;
+        const uvAccessor = manifest.accessors[uvAccessorIdx];
+        const uvBufferView = manifest.bufferViews[uvAccessor.bufferView];
+        attributes["uv"] = {
+          buffer: regl.buffer(
+            new Float32Array(
+              buffer,
+              uvBufferView.byteOffset,
+              uvBufferView.byteLength / 4
+            )
+          ),
+          offset: uvAccessor.byteOffset,
+          stride: uvBufferView.byteStride,
+        };
+      }
+
+      /// material
+      const materialIdx = primitive.material;
+      const material = manifest.materials[materialIdx];
+
+      let uniforms: {
+        sceneTransform: any;
+        modelTransform: any;
+      } & MaterialUniforms = {
+        sceneTransform: (context, props) => props.localTransform,
+        modelTransform: (context, props) => props.modelTransform,
+      };
+
+      if (skinIdx !== undefined) {
+        // build joint matrix
+        uniforms = { ...uniforms, ...buildJointMatrixUniforms(skinIdx) };
+
+        // set joint and weight attributes
+        attributes = {
+          ...attributes,
+          ...buildJointAttributes(regl, primitive),
+        };
+      }
+
+      uniforms = {
+        ...uniforms,
+        ...(await buildMaterialUniforms(
+          manifest,
+          material,
+          regl,
+          assetNamespace
+        )),
+      };
+
+      return {
+        attributes,
+        uniforms,
+        elements: indicesData,
+      };
+    });
     return fns;
   }
 
-  return buildMeshRenderFn;
+  return buildRenderFn;
 }
