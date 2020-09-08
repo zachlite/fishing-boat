@@ -193,6 +193,68 @@ window.onload = async () => {
     },
   });
 
+  const primitivePlane = require("primitive-plane");
+  const plane = primitivePlane(10, 10, 100, 100);
+
+  const oceanTransform = {
+    translation: [0, 0, 0],
+    rotaton: [90, 0, 0],
+    scale: [10, 10, 10],
+  };
+
+  const drawPlane = regl({
+    vert: `
+      precision mediump float;
+      uniform mat4 projection, view, model;
+      attribute vec3 position;
+      varying vec3 vWorldPos;
+
+      float random (in vec2 st) {
+        return fract(sin(dot(st.xy,
+                             vec2(12.9898,78.233)))
+                     * 43758.5453123);
+      }
+      
+
+      void main () {
+        gl_PointSize = 2.0;
+        // float zDisplacement = random(vec2(position.xy)) / 5.0;
+        float zDisplacement = 0.0;
+        vec3 posDisplacement = position;
+        posDisplacement.z = zDisplacement;
+        vec4 pos = projection * view * model * vec4(posDisplacement, 1.0);
+        vWorldPos = pos.xyz / pos.w;
+        gl_Position = pos;
+      }
+    `,
+    frag: `
+      precision mediump float;
+      varying vec3 vWorldPos;
+      void main () {
+        vec4 oceanBaseColor = vec4(0.0, 0.4, 1.0, 1.0);
+        gl_FragColor = oceanBaseColor;
+      }
+    `,
+    attributes: {
+      position: plane.positions,
+    },
+    uniforms: {
+      model: mat4.fromRotationTranslationScale(
+        mat4.create(),
+        quat.fromEuler(
+          quat.create(),
+          oceanTransform.rotaton[0],
+          oceanTransform.rotaton[1],
+          oceanTransform.rotaton[2]
+        ),
+        oceanTransform.translation as any,
+        oceanTransform.scale as any
+      ),
+    },
+    elements: plane.cells,
+    // primitive: "points",
+  });
+
   regl.frame((context) => {
     const time = context.time;
     regl.clear({ color: [0, 0, 0, 1], depth: 1 });
@@ -204,10 +266,12 @@ window.onload = async () => {
 
     camera((c) => {
       lightContext({ lightDirection }, () => {
-        transform.rotation[1] += 0.1;
+        transform.rotation[1] = Math.cos(time);
         transform.rotation[0] = Math.sin(time);
         transform.rotation[2] = Math.cos(time);
         const modelTransform = calcModelTransform(transform);
+
+        drawPlane();
 
         depthBufferContext({ depthProjection, depthView }, () => {
           depthBufferRenderer(modelTransform, nodeTransforms);

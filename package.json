@@ -8,6 +8,7 @@
     "angle-normals": "^1.0.0",
     "gl-matrix": "^3.3.0",
     "normals": "^1.1.0",
+    "primitive-plane": "^2.0.1",
     "regl": "^1.6.1",
     "regl-camera": "^2.1.1"
   },
