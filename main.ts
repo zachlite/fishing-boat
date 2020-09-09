@@ -232,9 +232,9 @@ window.onload = async () => {
 
     // compute the wave height at the boat's xz.
     transform.translation[1] = computeWaveHeight(transform.translation, time);
-    // transform.rotation[1] = Math.cos(time);
-    // transform.rotation[0] = Math.sin(time);
-    // transform.rotation[2] = Math.cos(time);
+    transform.rotation[1] = Math.cos(time);
+    transform.rotation[0] = Math.sin(time);
+    transform.rotation[2] = Math.cos(time);
     const modelTransform = calcModelTransform(transform);
 
     camera((c) => {
