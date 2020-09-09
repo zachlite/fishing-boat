@@ -44,3 +44,10 @@ Boat Diorama:
 
 - water, waves, reflections
 - point lights
+
+## Boat Scene Todo:
+
+- ocean needs access to BRDF and reflectance equation
+- cast shadow onto ocean
+- debug draw orthographic frustrum
+- Waves!

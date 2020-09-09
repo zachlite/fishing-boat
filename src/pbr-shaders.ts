@@ -1,3 +1,70 @@
+export const BRDFReflectanceSource = `
+float FresnelSchlick(float VdotH) {
+  return pow(1.0 - VdotH, 5.0);
+}
+
+float MicrofacetDistribution(float NdotH, float a) {
+  float a2     = a*a;
+  float NdotH2 = NdotH*NdotH;
+  float num   = a2;
+  float denom = (NdotH2 * (a2 - 1.0) + 1.0);
+  denom = pi * denom * denom;
+  return num / max(denom, .00001);
+}
+
+float GeometrySchlickGGX(float NdotV, float roughness) {
+  float r = (roughness + 1.0);
+  float k = (r*r) / 8.0;
+
+  float nom   = NdotV;
+  float denom = NdotV * (1.0 - k) + k;
+
+  return nom / denom;
+}
+
+float GeometrySmith(vec3 N, vec3 V, vec3 L, float roughness) {
+  float NdotV = max(dot(N, V), 0.0);
+  float NdotL = max(dot(N, L), 0.0);
+  float ggx2 = GeometrySchlickGGX(NdotV, roughness);
+  float ggx1 = GeometrySchlickGGX(NdotL, roughness);
+  return ggx1 * ggx2;
+}
+
+vec3 SchlickReflectance(vec3 N, vec3 V, vec3 L, vec3 H, vec3 radiance, vec3 Cdiff, float roughness) {
+  float VdotH = clamp(dot(V, H), 0.0, 1.0);
+  float NdotL = clamp(dot(N, L), 0.0, 1.0);
+  float NdotV = clamp(dot(N, V), 0.0, 1.0);
+  float NdotH = clamp(dot(N, H), 0.0, 1.0);
+  float alpha = roughness * roughness;
+
+  float G = GeometrySmith(N, V, L, roughness);
+  float D = MicrofacetDistribution(NdotH, alpha);
+  float F = FresnelSchlick(VdotH);
+
+  float fspecular = F * G * D / max(4.0 * NdotL * NdotV, .0001);
+  vec3 diffuse = Cdiff / pi;
+  vec3 fdiffuse = (1.0 - F) * diffuse;
+  vec3 Lo = (fdiffuse + fspecular) * radiance * NdotL;
+  return Lo;
+}
+
+`;
+
+export const shadowMapSamplerSource = `
+float inShadow(vec3 fragPosDepthSpace, vec3 normal, vec3 lightDir) {
+  vec3 sampleCoords = fragPosDepthSpace * 0.5 + 0.5;
+  float closest = texture2D(depthSampler, sampleCoords.xy).z;
+
+  if (closest == 1.0) {
+    return 1.0;
+  }
+
+  float current = fragPosDepthSpace.z;
+  float bias = max(0.05 * (1.0 - dot(normal, lightDir)), 0.005);  
+  return closest < current - bias ? 0.0 : 1.0;
+}
+`;
+
 export function buildPBRVert(attributes, uniforms, numJoints = 0) {
   // prettier-ignore
   const source = `
@@ -86,36 +153,7 @@ export function buildPBRFrag(attributes, uniforms) {
     ${uniforms.depthSampler ? `uniform sampler2D depthSampler;` : ``}
     varying vec3 vPosDepthSpace; //TODO: will need w component when dealing with point light shadows.
 
-    float FresnelSchlick(float VdotH) {
-      return pow(1.0 - VdotH, 5.0);
-    }
-
-    float MicrofacetDistribution(float NdotH, float a) {
-      float a2     = a*a;
-      float NdotH2 = NdotH*NdotH;
-      float num   = a2;
-      float denom = (NdotH2 * (a2 - 1.0) + 1.0);
-      denom = pi * denom * denom;
-      return num / max(denom, .00001);
-    }
-    
-    float GeometrySchlickGGX(float NdotV, float roughness) {
-      float r = (roughness + 1.0);
-      float k = (r*r) / 8.0;
-
-      float nom   = NdotV;
-      float denom = NdotV * (1.0 - k) + k;
-
-      return nom / denom;
-    }
-
-    float GeometrySmith(vec3 N, vec3 V, vec3 L, float roughness) {
-      float NdotV = max(dot(N, V), 0.0);
-      float NdotL = max(dot(N, L), 0.0);
-      float ggx2 = GeometrySchlickGGX(NdotV, roughness);
-      float ggx1 = GeometrySchlickGGX(NdotL, roughness);
-      return ggx1 * ggx2;
-    }
+  
 
     vec3 linearTosRGB(vec3 color) {
       return pow(color, vec3(INV_GAMMA));
@@ -165,13 +203,10 @@ export function buildPBRFrag(attributes, uniforms) {
       return baseColor;
     }
 
-    float inShadow(vec3 fragPosDepthSpace, vec3 normal, vec3 lightDir) {
-      vec3 sampleCoords = fragPosDepthSpace * 0.5 + 0.5;
-      float closest = texture2D(depthSampler, sampleCoords.xy).z;
-      float current = fragPosDepthSpace.z;
-      float bias = max(0.05 * (1.0 - dot(normal, lightDir)), 0.005);  
-      return closest < current - bias ? 0.0 : 1.0;
-    }
+
+
+    ${BRDFReflectanceSource}
+    ${shadowMapSamplerSource}
 
     void main() {
       vec4 baseColor = getBaseColor();
@@ -192,27 +227,9 @@ export function buildPBRFrag(attributes, uniforms) {
       vec3 V = normalize(eye - vWorldPos);
       vec3 L = normalize(-lightDirection);
       vec3 H = normalize(L + V);
-
-      float VdotH = clamp(dot(V, H), 0.0, 1.0);
-      float NdotL = clamp(dot(N, L), 0.0, 1.0);
-      float NdotV = clamp(dot(N, V), 0.0, 1.0);
-      float NdotH = clamp(dot(N, H), 0.0, 1.0);
-
-      float G = GeometrySmith(N, V, L, roughness);
-      float D = MicrofacetDistribution(NdotH, alpha);
-      float F = FresnelSchlick(VdotH);
-
-      float fspecular = F * G * D / max(4.0 * NdotL * NdotV, .0001);
-      vec3 diffuse = Cdiff / pi;
-      vec3 fdiffuse = (1.0 - F) * diffuse;
-      vec3 Lo = (fdiffuse + fspecular) * radiance * NdotL;
       
+      vec3 Lo = SchlickReflectance(N, V, L, H, radiance, Cdiff, roughness);
       
-      
-      // if depth map is present:
-      // convert this fragment to depth space (do in vertex shader)
-      // vFragDepthSpace 
-      // 
       float shadow = inShadow(vPosDepthSpace, N, L);
       vec3 color = ambient + (shadow * Lo);
 
