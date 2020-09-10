@@ -168,12 +168,12 @@ export function buildPBRFrag(attributes, uniforms) {
     }
 
     vec3 getNormal() {
-      ${attributes.aTangent ? `
+      ${attributes.aTangent && uniforms.normalTexture ? `
         vec3 N = texture2D(normalTexture, vuv).rgb;
         N = v_TBN * normalize(N * 2.0 - 1.0);
       `: `
-        // vec3 N = normalize(vNormal);
-        vec3 N = normalize(cross(dFdx(vWorldPos), dFdy(vWorldPos)));
+        vec3 N = normalize(vNormal);
+        // vec3 N = normalize(cross(dFdx(vWorldPos), dFdy(vWorldPos)));
       `}
       return N;
     }
@@ -206,7 +206,7 @@ export function buildPBRFrag(attributes, uniforms) {
 
 
     ${BRDFReflectanceSource}
-    ${shadowMapSamplerSource}
+    ${uniforms.depthSampler ? shadowMapSamplerSource : ``}
 
     void main() {
       vec4 baseColor = getBaseColor();
@@ -230,7 +230,7 @@ export function buildPBRFrag(attributes, uniforms) {
       
       vec3 Lo = SchlickReflectance(N, V, L, H, radiance, Cdiff, roughness);
       
-      float shadow = inShadow(vPosDepthSpace, N, L);
+      ${uniforms.depthSampler ? `float shadow = inShadow(vPosDepthSpace, N, L);` : `float shadow = 1.0;`}
       vec3 color = ambient + (shadow * Lo);
 
       // gamma correction

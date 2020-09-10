@@ -47,7 +47,13 @@ Boat Diorama:
 
 ## Boat Scene Todo:
 
-- ocean needs access to BRDF and reflectance equation
-- cast shadow onto ocean
-- debug draw orthographic frustrum
-- Waves!
+- Boat height respects wave
+- ship lights
+- Gerstner waves
+- Boat roll and pitch respects wave normal
+- skybox
+- ripples
+
+DONE:
+
+- buoy and buoy shadow

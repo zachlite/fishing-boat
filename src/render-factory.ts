@@ -235,18 +235,18 @@ export function RenderFactory(manifest, buffer, assetNamespace) {
           offset: positionAccessor.byteOffset,
           stride: positionBufferView.byteStride,
         },
-        normal: calcNormals(chunkArray(indicesData, 3), positionsChunked),
-        // normal: {
-        //   buffer: regl.buffer(
-        //     new Float32Array(
-        //       buffer,
-        //       positionBufferView.byteOffset,
-        //       positionBufferView.byteLength / 4
-        //     )
-        //   ),
-        //   offset: normalsAccessor.byteOffset,
-        //   stride: normalsBufferView.byteStride,
-        // },
+        // normal: calcNormals(chunkArray(indicesData, 3), positionsChunked),
+        normal: {
+          buffer: regl.buffer(
+            new Float32Array(
+              buffer,
+              positionBufferView.byteOffset,
+              positionBufferView.byteLength / 4
+            )
+          ),
+          offset: normalsAccessor.byteOffset,
+          stride: normalsBufferView.byteStride,
+        },
       };
 
       if (primitive.attributes.TANGENT !== undefined) {

@@ -141,10 +141,25 @@ window.onload = async () => {
     assetNamespace
   );
 
-  const nodeTransforms = manifest.scenes[0].nodes.reduce((acc, nodeIdx) => {
-    acc = { ...acc, ...buildNodeTransforms(manifest.nodes, nodeIdx) };
-    return acc;
-  }, {});
+  // load buoy
+  const buoyGLTF = await fetchglTF(`buoy/scene.gltf`, `buoy/scene.bin`);
+
+  const buoyPrimitives = await loadMeshPrimitives(
+    regl,
+    buoyGLTF.manifest,
+    buoyGLTF.buffer,
+    "buoy"
+  );
+
+  function getNodeTransforms(manifest) {
+    return manifest.scenes[0].nodes.reduce((acc, nodeIdx) => {
+      acc = { ...acc, ...buildNodeTransforms(manifest.nodes, nodeIdx) };
+      return acc;
+    }, {});
+  }
+
+  const boatNodeTransforms = getNodeTransforms(manifest);
+  const buoyNodeTransforms = getNodeTransforms(buoyGLTF.manifest);
 
   const res = 8192;
   const depthBuffer = regl.framebuffer({
@@ -173,6 +188,35 @@ window.onload = async () => {
     null,
     { depthSampler: (context, props) => props.depthSampler }
   );
+
+  const buoyRenderer = buildRenderer(
+    regl,
+    buoyPrimitives,
+    {
+      vertBuilder: buildPBRVert,
+      fragBuilder: buildPBRFrag,
+    },
+    null,
+    { depthSampler: (context, props) => props.depthSampler }
+  );
+
+  const buoyDepthRenderer = buildRenderer(
+    regl,
+    buoyPrimitives,
+    {
+      vertBuilder: buildDepthBufferVert,
+      fragBuilder: buildDepthBufferFrag,
+    },
+    depthBuffer
+  );
+
+  const buoyTransform = {
+    translation: [5, 2, 0],
+    rotation: [0, 0, 0],
+    scale: [0.025, 0.025, 0.025],
+  };
+
+  const buoyTransformMatrix = calcModelTransform(buoyTransform);
 
   const depthDim = 5;
   const depthProjection = mat4.ortho(
@@ -231,7 +275,7 @@ window.onload = async () => {
     });
 
     // compute the wave height at the boat's xz.
-    transform.translation[1] = computeWaveHeight(transform.translation, time);
+    // transform.translation[1] = computeWaveHeight(transform.translation, time);
     transform.rotation[1] = Math.cos(time);
     transform.rotation[0] = Math.sin(time);
     transform.rotation[2] = Math.cos(time);
@@ -246,9 +290,14 @@ window.onload = async () => {
 
           // TODO: I hate this API
           // bad separation of concerns between glTF and rendering.
-          depthBufferRenderer(modelTransform, nodeTransforms);
+          depthBufferRenderer(modelTransform, boatNodeTransforms);
+          buoyDepthRenderer(buoyTransformMatrix, buoyNodeTransforms);
 
-          pbrRenderer(modelTransform, nodeTransforms, {
+          pbrRenderer(modelTransform, boatNodeTransforms, {
+            depthSampler: depthBuffer,
+          });
+
+          buoyRenderer(buoyTransformMatrix, buoyNodeTransforms, {
             depthSampler: depthBuffer,
           });
 

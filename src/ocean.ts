@@ -2,7 +2,7 @@ import { BRDFReflectanceSource, shadowMapSamplerSource } from "./pbr-shaders";
 import { mat4, quat } from "gl-matrix";
 
 const primitivePlane = require("primitive-plane");
-const plane = primitivePlane(100, 100, 1500, 1500);
+const plane = primitivePlane(100, 100, 1000, 1000);
 
 const oceanTransform = {
   translation: [0, 0, 0],
@@ -69,16 +69,13 @@ export function buildDrawOcean(regl) {
         WaveParams w4 = WaveParams(0.005, .54, 2.9, vec2(.13, 1.0283));
         WaveParams w5 = WaveParams(0.334, 2.75, 3.4, vec2(.02, 1.233));
 
-
-
-
         vec3 wave = position;
 
         wave.z =  computeWaveHeight(position, time, w1)
                 + computeWaveHeight(position, time, w2)
                 + computeWaveHeight(position, time, w3)
                 + computeWaveHeight(position, time, w4);
-                // + computeWaveHeight(position, time, w5);
+                + computeWaveHeight(position, time, w5);
 
 
         wave.z += random(wave.xy) / 80.0;
