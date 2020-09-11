@@ -47,13 +47,13 @@ Boat Diorama:
 
 ## Boat Scene Todo:
 
-- Boat height respects wave
 - ship lights
-- Gerstner waves
-- Boat roll and pitch respects wave normal
-- skybox
 - ripples
+- skybox
 
 DONE:
 
 - buoy and buoy shadow
+- Boat height respects wave
+- Boat roll and pitch respects wave normal
+- Gerstner waves

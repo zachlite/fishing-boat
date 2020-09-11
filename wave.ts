@@ -1,5 +1,5 @@
 import { debug } from "console";
-import { vec2, vec3 } from "gl-matrix";
+import { quat, vec2, vec3 } from "gl-matrix";
 
 function computeWaveHeight(pos, time, wave: Wave) {
   // amplitude:
@@ -70,4 +70,20 @@ export function computeWaveHeightAndNormal(pos, time) {
   vec3.normalize(normal, normal);
 
   return { height, normal };
+}
+
+export function computeRotationFromWaveNormal(normal, rotationFromWave) {
+  const cross = vec3.cross([] as any, normal, [0, 1, 0]);
+  const waveDotUp = vec3.dot(normal, [0, 1, 0]);
+
+  rotationFromWave[0] = cross[0];
+  rotationFromWave[1] = cross[1];
+  rotationFromWave[2] = cross[2];
+  rotationFromWave[3] =
+    Math.sqrt(
+      Math.pow(vec3.len(normal), 2) * Math.pow(vec3.len([0, 1, 0]), 2)
+    ) + waveDotUp;
+
+  quat.normalize(rotationFromWave, rotationFromWave);
+  return rotationFromWave;
 }

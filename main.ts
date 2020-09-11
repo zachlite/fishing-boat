@@ -19,7 +19,10 @@ import {
 } from "./src/depth-buffer-shaders";
 import { buildDrawOcean } from "./src/ocean";
 import { buildDrawDepthCamera } from "./src/debug-depth-camera";
-import { computeWaveHeightAndNormal } from "./wave";
+import {
+  computeRotationFromWaveNormal,
+  computeWaveHeightAndNormal,
+} from "./wave";
 
 async function fetchglTF(manifestPath, binPath) {
   const manifest = await fetch(`${AssetUrl}/${manifestPath}`).then((response) =>
@@ -211,12 +214,10 @@ window.onload = async () => {
   );
 
   const buoyTransform = {
-    translation: [5, 2, 0],
+    translation: [5, 0, -4],
     rotation: [0, 0, 0],
     scale: [0.025, 0.025, 0.025],
   };
-
-  const buoyTransformMatrix = calcModelTransform(buoyTransform);
 
   const depthDim = 5;
   const depthProjection = mat4.ortho(
@@ -263,8 +264,10 @@ window.onload = async () => {
     depthCameraEye,
     depthDim
   );
-  const rotationToWaveQuat = quat.create();
-  const rotationToWaveMat = mat4.create();
+  let boatRotationFromWave = quat.create();
+  let buoyRotationFromWave = quat.create();
+
+  const buoyTransformMatrix = mat4.create();
 
   regl.frame((context) => {
     const time = context.time;
@@ -276,35 +279,44 @@ window.onload = async () => {
       framebuffer: depthBuffer,
     });
 
-    // compute the wave height at the boat's xz.
-    // transform.translation[1] = computeWaveHeight(transform.translation, time);
-    const wave = computeWaveHeightAndNormal(
+    const boatWave = computeWaveHeightAndNormal(
       [transform.translation[0], transform.translation[2]],
       time
     );
-    transform.translation[1] = wave.height - 0.3;
+
+    // const buoyWave = computeWaveHeightAndNormal(
+    //   [buoyTransform.translation[0], buoyTransform.translation[2]],
+    //   time
+    // );
+
+    transform.translation[1] = boatWave.height - 0.2;
+    // buoyTransform.translation[1] = buoyWave.height + 0.5;
 
     // how do we set the boat's rotation to align with the normal?
 
-    const cross = vec3.cross([] as any, wave.normal, [0, 1, 0]);
-    const waveDotUp = vec3.dot(wave.normal, [0, 1, 0]);
-
-    rotationToWaveQuat[0] = cross[0];
-    rotationToWaveQuat[1] = cross[1];
-    rotationToWaveQuat[2] = cross[2];
-    rotationToWaveQuat[3] =
-      Math.sqrt(
-        Math.pow(vec3.len(wave.normal), 2) * Math.pow(vec3.len([0, 1, 0]), 2)
-      ) + waveDotUp;
-
-    quat.normalize(rotationToWaveQuat, rotationToWaveQuat);
+    boatRotationFromWave = computeRotationFromWaveNormal(
+      boatWave.normal,
+      boatRotationFromWave
+    );
+    // buoyRotationFromWave = computeRotationFromWaveNormal(
+    //   buoyWave.normal,
+    //   buoyRotationFromWave
+    // );
 
     const modelTransform = mat4.fromRotationTranslationScale(
       mat4.create(),
-      rotationToWaveQuat,
+      boatRotationFromWave,
       transform.translation as any,
       transform.scale as any
     );
+
+    // mat4.fromRotationTranslationScale(
+    //   buoyTransformMatrix,
+    //   quat.create(),
+    //   buoyTransform.translation as any,
+    //   buoyTransform.scale as any
+    // );
+
     // align boat according to wave normal.
 
     camera((c) => {
@@ -317,15 +329,15 @@ window.onload = async () => {
           // TODO: I hate this API
           // bad separation of concerns between glTF and rendering.
           depthBufferRenderer(modelTransform, boatNodeTransforms);
-          buoyDepthRenderer(buoyTransformMatrix, buoyNodeTransforms);
+          // buoyDepthRenderer(buoyTransformMatrix, buoyNodeTransforms);
 
           pbrRenderer(modelTransform, boatNodeTransforms, {
             depthSampler: depthBuffer,
           });
 
-          buoyRenderer(buoyTransformMatrix, buoyNodeTransforms, {
-            depthSampler: depthBuffer,
-          });
+          // buoyRenderer(buoyTransformMatrix, buoyNodeTransforms, {
+          //   depthSampler: depthBuffer,
+          // });
 
           drawOcean({ depthSampler: depthBuffer, time });
         });
