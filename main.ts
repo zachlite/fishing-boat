@@ -23,6 +23,8 @@ import {
   computeRotationFromWaveNormal,
   computeWaveHeightAndNormal,
 } from "./wave";
+import { loadImage } from "./src/render-factory";
+import { buildDrawRipple } from "./ripple";
 
 async function fetchglTF(manifestPath, binPath) {
   const manifest = await fetch(`${AssetUrl}/${manifestPath}`).then((response) =>
@@ -265,9 +267,9 @@ window.onload = async () => {
     depthDim
   );
   let boatRotationFromWave = quat.create();
-  let buoyRotationFromWave = quat.create();
 
-  const buoyTransformMatrix = mat4.create();
+  const rippleImage = await loadImage("/img/Icon_Bird_512x512.png");
+  const drawRipple = buildDrawRipple(regl, rippleImage);
 
   regl.frame((context) => {
     const time = context.time;
@@ -337,6 +339,11 @@ window.onload = async () => {
 
           // buoyRenderer(buoyTransformMatrix, buoyNodeTransforms, {
           //   depthSampler: depthBuffer,
+          // });
+
+          // drawRipple({
+          //   transform: mat4.fromTranslation(mat4.create(), [5, 5, 5]),
+          //   alpha: 0.4,
           // });
 
           drawOcean({ depthSampler: depthBuffer, time });

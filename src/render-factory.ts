@@ -7,7 +7,7 @@ import { AssetUrl } from "./constants";
 import { buildPBRVert, buildPBRFrag } from "./pbr-shaders";
 const calcNormals = require("angle-normals");
 
-async function loadImage(imgpath): Promise<HTMLImageElement> {
+export async function loadImage(imgpath): Promise<HTMLImageElement> {
   return new Promise((resolve) => {
     const image = new Image();
     image.src = `${AssetUrl}/${imgpath}`;
