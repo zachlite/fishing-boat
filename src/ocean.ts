@@ -1,16 +1,69 @@
 import { BRDFReflectanceSource, shadowMapSamplerSource } from "./pbr-shaders";
 import { mat4, quat } from "gl-matrix";
 
-const primitivePlane = require("primitive-plane");
-const plane = primitivePlane(100, 100, 1000, 1000);
-
 const oceanTransform = {
   translation: [0, 0, 0],
   rotaton: [90, 0, 0],
   scale: [1, 1, 1],
 };
 
+function createPlane(sx, sy, nx, ny, options) {
+  sx = sx || 1;
+  sy = sy || sx;
+  nx = nx || 1;
+  ny = ny || nx;
+  var quads = options && options.quads ? options.quads : false;
+  var includeUvs = options && options.uvs ? options.uvs : false;
+
+  var positions = [];
+  var uvs = [];
+  var normals = [];
+  var cells = [];
+
+  for (var iy = 0; iy <= ny; iy++) {
+    for (var ix = 0; ix <= nx; ix++) {
+      var u = ix / nx;
+      var v = iy / ny;
+      var x = -sx / 2 + u * sx; // starts on the left
+      var y = sy / 2 - v * sy; // starts at the top
+      positions.push(x, y, 0);
+      if (includeUvs) uvs.push(u, 1.0 - v);
+      normals.push(0, 0, 1);
+      if (iy < ny && ix < nx) {
+        if (quads) {
+          cells.push(
+            iy * (nx + 1) + ix,
+            (iy + 1) * (nx + 1) + ix,
+            (iy + 1) * (nx + 1) + ix + 1,
+            iy * (nx + 1) + ix + 1
+          );
+        } else {
+          cells.push(
+            iy * (nx + 1) + ix,
+            (iy + 1) * (nx + 1) + ix + 1,
+            iy * (nx + 1) + ix + 1
+          );
+          cells.push(
+            (iy + 1) * (nx + 1) + ix + 1,
+            iy * (nx + 1) + ix,
+            (iy + 1) * (nx + 1) + ix
+          );
+        }
+      }
+    }
+  }
+
+  return {
+    positions: positions,
+    normals: normals,
+    uvs: uvs,
+    cells: cells,
+  };
+}
+
 export function buildDrawOcean(regl) {
+  const plane = createPlane(100, 100, 1000, 1000, null);
+
   const drawOcean = regl({
     vert: `
       precision mediump float;
@@ -93,6 +146,7 @@ export function buildDrawOcean(regl) {
         vWorldPos = pos.xyz / pos.w; 
         vPosDepthSpace = (depthProjection * depthView * pos).xyz;
         vNormal = normal;
+        gl_PointSize = 3.0;
         gl_Position = projection * view * pos;
       }
     `,
@@ -150,7 +204,6 @@ export function buildDrawOcean(regl) {
       ),
     },
     elements: plane.cells,
-    // primitive: "points",
   });
 
   return drawOcean;

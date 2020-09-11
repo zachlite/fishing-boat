@@ -214,14 +214,14 @@ export function RenderFactory(manifest, buffer, assetNamespace) {
       const normalsBufferView =
         manifest.bufferViews[normalsAccessor.bufferView];
 
-      const positionsChunked = chunkArray(
-        new Float32Array(
-          buffer,
-          positionBufferView.byteOffset,
-          positionBufferView.byteLength / 4
-        ),
-        3
-      );
+      // const positionsChunked = chunkArray(
+      //   new Float32Array(
+      //     buffer,
+      //     positionBufferView.byteOffset,
+      //     positionBufferView.byteLength / 4
+      //   ),
+      //   3
+      // );
 
       let attributes: any = {
         position: {
