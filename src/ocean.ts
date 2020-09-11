@@ -56,33 +56,41 @@ export function buildDrawOcean(regl) {
         return waveHeight;
       }
 
-      // vec3 gerstnerWave(vec3 pos, float time, WaveParams wave) {
-      //   float Q = 1.0 / wave.f * wave.A; // steepness
-      //   float x = pos.x + 
-      // }
+      vec3 gerstnerWave(vec3 pos, float time, WaveParams wave) {
+        float f = 2.0 / wave.L;
+        float Q = .75 / f * wave.A; // steepness
+
+        float cosTerm = cos(dot(normalize(wave.D), pos.xy) * f + (time * wave.S * f));
+
+        float x = Q * wave.A * wave.D.x * cosTerm;
+        float y = Q * wave.A * wave.D.y * cosTerm;
+        float z = -computeWaveHeight(pos, time, wave);
+
+        return vec3(x, y, z);
+      }
 
   
       void main () {
-        WaveParams w1 = WaveParams(.76, 12.31, 4.0, vec2(1.0, 0.0));
-        WaveParams w2 = WaveParams(.84, 6.40, 3.53, vec2(.7, .2));
-        WaveParams w3 = WaveParams(0.435, 2.75, .82, vec2(1.243, .83));
+        WaveParams w1 = WaveParams(.78, 8.31, 4.0, vec2(1.0, 0.0));
+        WaveParams w2 = WaveParams(.68, 6.40, 3.53, vec2(.7, .121));
+        WaveParams w3 = WaveParams(0.435, 10.75, 1.82, vec2(1.243, .83));
         WaveParams w4 = WaveParams(0.005, .54, 2.9, vec2(.13, 1.0283));
-        WaveParams w5 = WaveParams(0.334, 2.75, 3.4, vec2(.02, 1.233));
+        WaveParams w5 = WaveParams(0.134, 2.75, 3.4, vec2(.82, .233));
 
-        vec3 wave = position;
+        vec3 wave =  gerstnerWave(position, time, w1)
+                + gerstnerWave(position, time, w2)
+                + gerstnerWave(position, time, w3)
+                + gerstnerWave(position, time, w4)
+                + gerstnerWave(position, time, w5);
 
-        wave.z =  computeWaveHeight(position, time, w1)
-                + computeWaveHeight(position, time, w2)
-                + computeWaveHeight(position, time, w3)
-                + computeWaveHeight(position, time, w4);
-                + computeWaveHeight(position, time, w5);
+        wave.x += position.x;
+        wave.y += position.y;
 
 
-        wave.z += random(wave.xy) / 80.0;
+        wave.z += random(position.xy) / 80.0;
         vec4 pos = model * vec4(wave, 1.0);
- 
 
-        vWorldPos = pos.xyz / pos.w;
+        vWorldPos = pos.xyz / pos.w; 
         vPosDepthSpace = (depthProjection * depthView * pos).xyz;
         vNormal = normal;
         gl_Position = projection * view * pos;

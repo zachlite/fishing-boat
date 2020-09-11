@@ -19,7 +19,7 @@ import {
 } from "./src/depth-buffer-shaders";
 import { buildDrawOcean } from "./src/ocean";
 import { buildDrawDepthCamera } from "./src/debug-depth-camera";
-import { computeWaveHeight } from "./wave";
+import { computeWaveHeightAndNormal } from "./wave";
 
 async function fetchglTF(manifestPath, binPath) {
   const manifest = await fetch(`${AssetUrl}/${manifestPath}`).then((response) =>
@@ -263,6 +263,8 @@ window.onload = async () => {
     depthCameraEye,
     depthDim
   );
+  const rotationToWaveQuat = quat.create();
+  const rotationToWaveMat = mat4.create();
 
   regl.frame((context) => {
     const time = context.time;
@@ -276,10 +278,34 @@ window.onload = async () => {
 
     // compute the wave height at the boat's xz.
     // transform.translation[1] = computeWaveHeight(transform.translation, time);
-    transform.rotation[1] = Math.cos(time);
-    transform.rotation[0] = Math.sin(time);
-    transform.rotation[2] = Math.cos(time);
-    const modelTransform = calcModelTransform(transform);
+    const wave = computeWaveHeightAndNormal(
+      [transform.translation[0], transform.translation[2]],
+      time
+    );
+    transform.translation[1] = wave.height - 0.3;
+
+    // how do we set the boat's rotation to align with the normal?
+
+    const cross = vec3.cross([] as any, wave.normal, [0, 1, 0]);
+    const waveDotUp = vec3.dot(wave.normal, [0, 1, 0]);
+
+    rotationToWaveQuat[0] = cross[0];
+    rotationToWaveQuat[1] = cross[1];
+    rotationToWaveQuat[2] = cross[2];
+    rotationToWaveQuat[3] =
+      Math.sqrt(
+        Math.pow(vec3.len(wave.normal), 2) * Math.pow(vec3.len([0, 1, 0]), 2)
+      ) + waveDotUp;
+
+    quat.normalize(rotationToWaveQuat, rotationToWaveQuat);
+
+    const modelTransform = mat4.fromRotationTranslationScale(
+      mat4.create(),
+      rotationToWaveQuat,
+      transform.translation as any,
+      transform.scale as any
+    );
+    // align boat according to wave normal.
 
     camera((c) => {
       lightContext({ lightDirection }, () => {
