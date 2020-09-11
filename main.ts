@@ -24,7 +24,14 @@ import {
   computeWaveHeightAndNormal,
 } from "./wave";
 import { loadImage } from "./src/render-factory";
-import { buildDrawRipple } from "./ripple";
+import {
+  buildDrawRipple,
+  calcRippleTransformMatrix,
+  computeRippleScaleAndAlpha,
+  createRipple,
+  Ripple,
+  updateRipple,
+} from "./ripple";
 
 async function fetchglTF(manifestPath, binPath) {
   const manifest = await fetch(`${AssetUrl}/${manifestPath}`).then((response) =>
@@ -268,13 +275,19 @@ window.onload = async () => {
   );
   let boatRotationFromWave = quat.create();
 
-  const rippleImage = await loadImage("/img/Icon_Bird_512x512.png");
+  const rippleImage = await loadImage("/img/ripple.png");
   const drawRipple = buildDrawRipple(regl, rippleImage);
 
+  let ripple = createRipple();
+
+  let dt = 0;
+  let lastTime = 0;
   regl.frame((context) => {
     const time = context.time;
+    dt = lastTime === 0 ? 0.016 : time - lastTime;
+    lastTime = time;
 
-    regl.clear({ color: [0, 0, 0, 1], depth: 1 });
+    regl.clear({ color: [1, 1, 1, 1], depth: 1 });
     regl.clear({
       color: [1, 1, 1, 1],
       depth: 1,
@@ -286,24 +299,12 @@ window.onload = async () => {
       time
     );
 
-    // const buoyWave = computeWaveHeightAndNormal(
-    //   [buoyTransform.translation[0], buoyTransform.translation[2]],
-    //   time
-    // );
-
     transform.translation[1] = boatWave.height - 0.2;
-    // buoyTransform.translation[1] = buoyWave.height + 0.5;
-
-    // how do we set the boat's rotation to align with the normal?
 
     boatRotationFromWave = computeRotationFromWaveNormal(
       boatWave.normal,
       boatRotationFromWave
     );
-    // buoyRotationFromWave = computeRotationFromWaveNormal(
-    //   buoyWave.normal,
-    //   buoyRotationFromWave
-    // );
 
     const modelTransform = mat4.fromRotationTranslationScale(
       mat4.create(),
@@ -312,14 +313,8 @@ window.onload = async () => {
       transform.scale as any
     );
 
-    // mat4.fromRotationTranslationScale(
-    //   buoyTransformMatrix,
-    //   quat.create(),
-    //   buoyTransform.translation as any,
-    //   buoyTransform.scale as any
-    // );
-
-    // align boat according to wave normal.
+    // ripple = updateRipple(ripple, dt, time);
+    // const rippleTransformMatrix = calcRippleTransformMatrix(ripple);
 
     camera((c) => {
       lightContext({ lightDirection }, () => {
@@ -331,22 +326,17 @@ window.onload = async () => {
           // TODO: I hate this API
           // bad separation of concerns between glTF and rendering.
           depthBufferRenderer(modelTransform, boatNodeTransforms);
-          // buoyDepthRenderer(buoyTransformMatrix, buoyNodeTransforms);
 
           pbrRenderer(modelTransform, boatNodeTransforms, {
             depthSampler: depthBuffer,
           });
 
-          // buoyRenderer(buoyTransformMatrix, buoyNodeTransforms, {
-          //   depthSampler: depthBuffer,
-          // });
+          drawOcean({ depthSampler: depthBuffer, time });
 
           // drawRipple({
-          //   transform: mat4.fromTranslation(mat4.create(), [5, 5, 5]),
-          //   alpha: 0.4,
+          //   transform: rippleTransformMatrix,
+          //   alpha: ripple.alpha,
           // });
-
-          drawOcean({ depthSampler: depthBuffer, time });
         });
       });
     });
