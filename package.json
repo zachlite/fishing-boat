@@ -2,7 +2,7 @@
   "scripts": {
     "start": "parcel index.html",
     "http-server": "http-server assets --cors",
-    "build": "parcel build index.html --out-dir docs"
+    "build": "parcel build index.html --out-dir docs --public-url fishing-boat"
   },
   "dependencies": {
     "angle-normals": "^1.0.0",
