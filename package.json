@@ -2,7 +2,7 @@
   "scripts": {
     "start": "parcel index.html",
     "http-server": "http-server assets --cors",
-    "build": "parcel build index.html"
+    "build": "parcel build index.html --out-dir docs"
   },
   "dependencies": {
     "angle-normals": "^1.0.0",
